@@ -43,15 +43,17 @@ A write command prepares a change first. It is applied only after
 
 ## Documentation
 
-- Public API reference: <https://app.valiido.com/api>
-- Machine-readable specification: <https://app.valiido.com/api/openapi.json>
+- Authenticated API reference: <https://app.valiido.com/api>
+- Authenticated machine-readable specification: <https://app.valiido.com/api/openapi.json>
 - CLI reference: `valiido --help`
 - Live resources, actions and input schemas: `valiido command list`
 - Connected API schema: `valiido api schema`
 
-The API reference is generated from the Rails routes, the public operation
-contract and the same command registry used to execute requests. Resource and
-command lists are therefore not copied into this README.
+Sign in to view the browser reference. The machine-readable specification accepts
+either a browser session or an active agent token. Both are generated from the
+Rails routes, the public operation contract and the same command registry used to
+execute requests. Resource and command lists are therefore not copied into this
+README.
 
 ## Agent setup
 
