@@ -1,15 +1,33 @@
 package cli
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/zalando/go-keyring"
 )
+
+const (
+	profileLockWait          = 30 * time.Second
+	profileLockPoll          = 50 * time.Millisecond
+	orphanLockGrace          = time.Second
+	maxLockOwnerBytes        = 1024
+	maxStoredCredentialBytes = 4096
+)
+
+type lockOwner struct {
+	PID   int    `json:"pid"`
+	Nonce string `json:"nonce"`
+}
 
 type session struct {
 	Server       string    `json:"server"`
@@ -46,11 +64,94 @@ func openStore(profile string, file bool) (*store, func(), error) {
 		return nil, nil, failure("storage", "Could not secure the credential directory.")
 	}
 	lock := filepath.Join(dir, profile+".lock")
-	if err := os.Mkdir(lock, 0700); err != nil {
-		return nil, nil, failure("busy", "Profile is in use. After a crashed process, remove its .lock directory from your Valiido configuration.")
+	owner := lockOwner{PID: os.Getpid(), Nonce: randomLockNonce()}
+	deadline := time.Now().Add(profileLockWait)
+	for {
+		err = os.Mkdir(lock, 0700)
+		if err == nil {
+			if err := writeLockOwner(lock, owner); err != nil {
+				_ = os.Remove(lock)
+				return nil, nil, failure("storage", "Could not secure the profile lock.")
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, nil, failure("storage", "Could not acquire the profile lock.")
+		}
+		if reclaimStaleLock(lock) {
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, nil, failure("busy", "Profile is still in use. Wait for the other Valiido command to finish.")
+		}
+		time.Sleep(profileLockPoll)
 	}
 	s := &store{dir: dir, profile: profile, file: file}
-	return s, func() { _ = os.Remove(lock) }, nil
+	var once sync.Once
+	return s, func() { once.Do(func() { releaseLock(lock, owner) }) }, nil
+}
+
+func randomLockNonce() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", value)
+}
+
+func writeLockOwner(lock string, owner lockOwner) error {
+	data, err := json.Marshal(owner)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(lock, "owner.json"), data, 0600)
+}
+
+func readLockOwner(lock string) (lockOwner, error) {
+	var owner lockOwner
+	data, err := readBoundedFile(filepath.Join(lock, "owner.json"), maxLockOwnerBytes)
+	if err != nil {
+		return owner, err
+	}
+	err = json.Unmarshal(data, &owner)
+	if err != nil || owner.PID <= 0 || owner.Nonce == "" {
+		return lockOwner{}, errors.New("invalid lock owner")
+	}
+	return owner, nil
+}
+
+func reclaimStaleLock(lock string) bool {
+	owner, err := readLockOwner(lock)
+	if err != nil {
+		info, statErr := os.Lstat(lock)
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || time.Since(info.ModTime()) < orphanLockGrace {
+			return false
+		}
+		return renameStaleLock(lock)
+	}
+	if processAlive(owner.PID) {
+		return false
+	}
+	return renameStaleLock(lock)
+}
+
+func renameStaleLock(lock string) bool {
+	stale := lock + ".stale-" + strconv.Itoa(os.Getpid()) + "-" + randomLockNonce()
+	if os.Rename(lock, stale) != nil {
+		return false
+	}
+	_ = os.Remove(filepath.Join(stale, "owner.json"))
+	_ = os.Remove(stale)
+	return true
+}
+
+func releaseLock(lock string, expected lockOwner) {
+	owner, err := readLockOwner(lock)
+	if err != nil || owner != expected {
+		return
+	}
+	_ = os.Remove(filepath.Join(lock, "owner.json"))
+	_ = os.Remove(lock)
 }
 
 func (s *store) path() string { return filepath.Join(s.dir, s.profile+".json") }
@@ -65,10 +166,13 @@ func (s *store) load() (session, error) {
 			return value, failure("storage", "Credential file must be a regular file with mode 0600.")
 		}
 		s.file = true
-		data, err = os.ReadFile(s.path())
+		data, err = readBoundedFile(s.path(), maxStoredCredentialBytes)
 	} else if errors.Is(err, os.ErrNotExist) {
 		var raw string
 		raw, err = keyring.Get("valiido-cli", s.profile)
+		if len(raw) > maxStoredCredentialBytes {
+			return value, failure("storage", "Invalid stored credentials; sign in again.")
+		}
 		data = []byte(raw)
 	}
 	if err != nil || len(data) == 0 {
@@ -78,6 +182,22 @@ func (s *store) load() (session, error) {
 		return value, failure("storage", "Invalid stored credentials; sign in again.")
 	}
 	return value, nil
+}
+
+func readBoundedFile(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New("file exceeds size limit")
+	}
+	return data, nil
 }
 
 func (s *store) save(value session) error {

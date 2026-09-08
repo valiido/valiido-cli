@@ -7,44 +7,95 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 )
 
-const help = `Valiido CLI — ISMS access for people and agents
+var resourceTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+var commandNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}\.[a-z][a-z0-9_]{0,63}$`)
 
-  valiido setup [--agent codex|claude|all] [--force]
-  valiido auth login [--profile NAME] [--server URL] [--file-credentials]
-  valiido auth status [--profile NAME]
-  valiido auth logout [--profile NAME]
-  valiido resource list TYPE [--profile NAME] [--json]
-  valiido resource read TYPE ID [--profile NAME] [--json]
-  valiido resource examples TYPE [--query TEXT] [--limit N] [--profile NAME] [--json]
-  valiido resource pdf TYPE ID --output FILE.pdf [--profile NAME]
-  valiido command list [--profile NAME] [--json]
-  valiido command run NAME [--input JSON] [--dry-run] [--profile NAME]
-  valiido command confirm TOKEN [--profile NAME]
-  valiido command reject TOKEN [--profile NAME]
-  valiido api schema [--profile NAME]
+type commandDefinition struct {
+	name  string
+	usage string
+}
 
-JSON is the default output. Resource list retrieves every page.
+var commandDefinitions = []commandDefinition{
+	{"help", "valiido --help"},
+	{"version", "valiido --version"},
+	{"setup", "valiido setup [--agent codex|claude|all] [--force]"},
+	{"auth login", "valiido auth login [--profile NAME] [--server URL] [--file-credentials]"},
+	{"auth status", "valiido auth status [--profile NAME]"},
+	{"auth logout", "valiido auth logout [--profile NAME]"},
+	{"documents list", "valiido document list [--profile NAME] [--json]"},
+	{"documents read", "valiido document read ID [--text | --output FILE.pdf] [--profile NAME] [--json]"},
+	{"tasks list", "valiido task list [--profile NAME] [--json]"},
+	{"tasks read", "valiido task read ID [--profile NAME] [--json]"},
+	{"risks list", "valiido risk list [--profile NAME] [--json]"},
+	{"risks read", "valiido risk read ID [--profile NAME] [--json]"},
+	{"resources list", "valiido resource list TYPE [--query TEXT] [--profile NAME] [--json]"},
+	{"resources read", "valiido resource read TYPE ID [--profile NAME] [--json]"},
+	{"resources examples", "valiido resource examples TYPE [--query TEXT] [--limit N] [--profile NAME] [--json]"},
+	{"resources import", "valiido resource import TYPE --file FILE.json [--dry-run] [--profile NAME]"},
+	{"resources pdf", "valiido resource pdf TYPE ID --output FILE.pdf [--profile NAME]"},
+	{"commands list", "valiido command list [--query TEXT] [--limit N] [--profile NAME] [--json]"},
+	{"commands run", "valiido command run NAME [--input JSON] [--dry-run] [--profile NAME]"},
+	{"commands confirm", "valiido command confirm TOKEN [--profile NAME]"},
+	{"commands reject", "valiido command reject TOKEN [--profile NAME]"},
+	{"api schema", "valiido api schema [--profile NAME]"},
+}
+
+var knownCommands = func() map[string]bool {
+	commands := make(map[string]bool, len(commandDefinitions))
+	for _, definition := range commandDefinitions {
+		commands[definition.name] = true
+	}
+	return commands
+}()
+
+func commandUsage(name string) string {
+	for _, definition := range commandDefinitions {
+		if definition.name == name {
+			return definition.usage
+		}
+	}
+	return "valiido --help"
+}
+
+var help = func() string {
+	lines := make([]string, 0, len(commandDefinitions))
+	for _, definition := range commandDefinitions {
+		lines = append(lines, "  "+definition.usage)
+	}
+	return "Valiido CLI — ISMS access for people and agents\n\n" + strings.Join(lines, "\n") + `
+
+JSON is the default output. Resource list retrieves up to 10,000 records and accepts --query.
+Examples retrieves up to 10,000 records; --limit controls the page size.
+Import accepts a JSON array, validates every batch, and returns confirmation tokens.
 Use command list to discover resource types, actions and input schemas.
 IDs are tenant-scoped. PDFs require --output; files are never overwritten.
 Login shows a URL and code for browser approval. It does not open a browser.
 Use --server http://127.0.0.1:3000 for local development.
 `
+}()
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "help" {
 		fmt.Fprint(stdout, help)
 		return 0
 	}
+	if contextual, ok := contextualHelp(args); ok {
+		fmt.Fprint(stdout, contextual)
+		return 0
+	}
 	if len(args) == 1 && args[0] == "--version" {
-		fmt.Fprintln(stdout, "valiido 0.1.0")
+		fmt.Fprintln(stdout, "valiido "+version)
 		return 0
 	}
 	err := run(ctx, args, stdout, stderr)
@@ -57,18 +108,60 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		ae = typed
 	}
 	_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error": ae})
-	switch ae.Code {
+	return exitCode(ae.Code)
+}
+
+func exitCode(code string) int {
+	switch code {
 	case "usage":
 		return 2
+	case "unknown_command", "invalid_input", "validation_failed", "unsupported_resource_attributes":
+		return 6
 	case "auth", "invalid_grant", "access_denied", "expired_token":
 		return 3
-	case "forbidden":
+	case "forbidden", "not_authorized":
 		return 4
 	case "not_found":
 		return 5
+	case "rate_limited", "slow_down", "too_many_pending":
+		return 7
+	case "storage":
+		return 8
+	case "conflict":
+		return 9
 	default:
 		return 1
 	}
+}
+
+func contextualHelp(args []string) (string, bool) {
+	if len(args) < 2 || (args[len(args)-1] != "--help" && args[len(args)-1] != "-h") {
+		return "", false
+	}
+	parts := append([]string(nil), args[:len(args)-1]...)
+	parts[0] = canonicalNoun(parts[0])
+	if parts[0] == "setup" {
+		return "Usage:\n  " + commandUsage("setup") + "\n", true
+	}
+	if len(parts) >= 2 {
+		name := strings.Join(parts[:2], " ")
+		if knownCommands[name] {
+			return "Usage:\n  " + commandUsage(name) + "\n", true
+		}
+	}
+	if len(parts) == 1 {
+		prefix := parts[0] + " "
+		lines := []string{}
+		for _, definition := range commandDefinitions {
+			if strings.HasPrefix(definition.name, prefix) {
+				lines = append(lines, "  "+definition.usage)
+			}
+		}
+		if len(lines) > 0 {
+			return "Usage:\n" + strings.Join(lines, "\n") + "\n", true
+		}
+	}
+	return "", false
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -82,6 +175,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return failure("usage", "Expected a command. Run valiido --help.")
 	}
 	command := args[0] + " " + args[1]
+	if !knownCommands[command] {
+		return failure("usage", "Unknown command. Run valiido --help.")
+	}
 	rest := args[2:]
 	var id int64
 	var resourceType string
@@ -90,13 +186,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return failure("usage", "Expected a positive resource ID before options.")
 		}
 		var err error
-		id, err = strconv.ParseInt(rest[0], 10, 64)
-		if err != nil || id <= 0 {
-			return failure("usage", "Resource ID must be a positive integer.")
+		id, err = parseResourceID(rest[0])
+		if err != nil {
+			return err
 		}
 		rest = rest[1:]
 	}
-	if command == "resources list" || command == "resources examples" {
+	if command == "resources list" || command == "resources examples" || command == "resources import" {
 		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
 			return failure("usage", "Expected a resource type before options.")
 		}
@@ -108,9 +204,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		resourceType = rest[0]
 		var err error
-		id, err = strconv.ParseInt(rest[1], 10, 64)
-		if err != nil || id <= 0 {
-			return failure("usage", "Resource ID must be a positive integer.")
+		id, err = parseResourceID(rest[1])
+		if err != nil {
+			return err
 		}
 		rest = rest[2:]
 	}
@@ -120,9 +216,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		resourceType = rest[0]
 		var err error
-		id, err = strconv.ParseInt(rest[1], 10, 64)
-		if err != nil || id <= 0 {
-			return failure("usage", "Resource ID must be a positive integer.")
+		id, err = parseResourceID(rest[1])
+		if err != nil {
+			return err
 		}
 		rest = rest[2:]
 	}
@@ -139,11 +235,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		confirmationToken, rest = rest[0], rest[1:]
 	}
+	if resourceType != "" && !resourceTypePattern.MatchString(resourceType) {
+		return failure("usage", "Resource type must use lowercase letters, numbers and underscores and cannot exceed 64 characters.")
+	}
+	if commandName != "" && !commandNamePattern.MatchString(commandName) {
+		return failure("usage", "Command name must have the form resource.action and cannot exceed 129 characters.")
+	}
+	if confirmationToken != "" && (len(confirmationToken) > 4096 || strings.IndexFunc(confirmationToken, unicode.IsSpace) >= 0) {
+		return failure("usage", "Confirmation token cannot contain whitespace or exceed 4096 bytes.")
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	profile := flags.String("profile", "default", "Credential profile")
 	jsonOutput := flags.Bool("json", false, "JSON output (default)")
-	var server, output, commandInput, query string
+	var server, output, commandInput, query, importFile string
 	var limit int
 	var fileCredentials, text, dryRun bool
 	switch command {
@@ -157,13 +262,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.StringVar(&output, "output", "", "PDF output filename")
 	case "resources examples":
 		flags.StringVar(&query, "query", "", "Search example names and content")
-		flags.IntVar(&limit, "limit", 20, "Maximum number of examples (1-50)")
+		flags.IntVar(&limit, "limit", 50, "Examples per page (1-50); every page is retrieved")
+	case "resources list":
+		flags.StringVar(&query, "query", "", "Search resource fields")
+	case "resources import":
+		flags.StringVar(&importFile, "file", "", "JSON array to import")
+		flags.BoolVar(&dryRun, "dry-run", false, "Validate without preparing changes")
+	case "commands list":
+		flags.StringVar(&query, "query", "", "Search command names and descriptions")
+		flags.IntVar(&limit, "limit", 0, "Maximum number of commands (1-250)")
 	case "commands run":
 		flags.StringVar(&commandInput, "input", "{}", "Command input as a JSON object")
 		flags.BoolVar(&dryRun, "dry-run", false, "Validate and preview without changing data")
-	case "auth status", "auth logout", "documents list", "tasks list", "tasks read", "risks list", "risks read", "resources list", "resources read", "commands list", "commands confirm", "commands reject", "api schema":
+	case "auth status", "auth logout", "documents list", "tasks list", "tasks read", "risks list", "risks read", "resources read", "commands confirm", "commands reject", "api schema":
 	default:
 		return failure("usage", "Unknown command. Run valiido --help.")
+	}
+	if err := rejectDuplicateFlags(rest, flags); err != nil {
+		return err
 	}
 	if err := flags.Parse(rest); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -172,11 +288,48 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		return failure("usage", "Invalid options. Run valiido --help.")
 	}
+	limitProvided := false
+	flags.Visit(func(option *flag.Flag) {
+		limitProvided = limitProvided || option.Name == "limit"
+	})
 	if flags.NArg() != 0 || (text && (output != "" || *jsonOutput)) || (command == "resources pdf" && output == "") {
 		return failure("usage", "Unexpected arguments or incompatible output options.")
 	}
 	if command == "resources examples" && (limit < 1 || limit > 50) {
 		return failure("usage", "--limit must be between 1 and 50.")
+	}
+	if command == "commands list" && limitProvided && (limit < 1 || limit > 250) {
+		return failure("usage", "--limit must be between 1 and 250.")
+	}
+	if len(query) > 1024 {
+		return failure("usage", "--query cannot exceed 1024 bytes.")
+	}
+	if command == "resources import" && importFile == "" {
+		return failure("usage", "--file is required for resource import.")
+	}
+	var parsedCommandInput map[string]any
+	if command == "commands run" {
+		if len(commandInput) > maxCommandInput {
+			return failure("usage", "--input cannot exceed 64 KiB.")
+		}
+		var value any
+		if err := json.Unmarshal([]byte(commandInput), &value); err != nil {
+			return failure("usage", "--input must contain valid JSON.")
+		}
+		var ok bool
+		parsedCommandInput, ok = value.(map[string]any)
+		if !ok || parsedCommandInput == nil {
+			return failure("usage", "--input must be a JSON object.")
+		}
+	}
+	var importBatches [][]byte
+	var importTotal int
+	if command == "resources import" {
+		var err error
+		importBatches, importTotal, err = readImportBatches(importFile)
+		if err != nil {
+			return err
+		}
 	}
 	s, unlock, err := openStore(*profile, fileCredentials)
 	if err != nil {
@@ -211,6 +364,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_ = revoke(ctx, c, tokens.RefreshToken)
 			return err
 		}
+		unlock()
 		return success(stdout, me)
 	}
 	value, err := s.load()
@@ -228,6 +382,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err := s.clear(); err != nil {
 			return err
 		}
+		unlock()
 		return success(stdout, map[string]bool{"revoked": true})
 	}
 	if value.ExpiresAt.Before(time.Now().Add(30 * time.Second)) {
@@ -262,6 +417,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
+	// Access tokens can be used concurrently. Release the profile before the
+	// actual command while keeping load, refresh rotation and saving serialized.
+	unlock()
 	switch command {
 	case "auth status":
 		return success(stdout, me)
@@ -300,7 +458,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return success(stdout, d)
 	case "tasks list", "risks list":
 		kind := strings.Fields(command)[0]
-		items, err := c.resources(ctx, kind)
+		items, err := c.resources(ctx, kind, "")
 		if err != nil {
 			return err
 		}
@@ -313,7 +471,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		return success(stdout, item)
 	case "resources list":
-		items, err := c.resources(ctx, resourceType)
+		items, err := c.resources(ctx, resourceType, query)
 		if err != nil {
 			return err
 		}
@@ -325,31 +483,32 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		return success(stdout, item)
 	case "resources examples":
-		input, err := json.Marshal(map[string]any{"query": query, "limit": limit})
-		if err != nil {
-			return failure("usage", "Could not encode example search options.")
-		}
-		result, err := c.runCommand(ctx, resourceType+".list_examples", string(input), false)
+		result, err := c.examples(ctx, resourceType, query, limit)
 		if err != nil {
 			return err
 		}
-		return success(stdout, result.Data)
+		return success(stdout, result)
+	case "resources import":
+		results, err := c.importResources(ctx, resourceType, importBatches, dryRun)
+		if err != nil {
+			return err
+		}
+		return success(stdout, map[string]any{
+			"type": resourceType, "count": importTotal, "batches": results,
+			"dry_run": dryRun, "confirmation_required": !dryRun,
+		})
 	case "resources pdf":
 		if err := c.download(ctx, resourceType, id, output); err != nil {
 			return err
 		}
 		return success(stdout, map[string]any{"type": resourceType, "id": id, "saved_to": output})
 	case "commands list":
-		catalog, err := c.commands(ctx)
+		catalog, err := c.commands(ctx, query, limit)
 		if err != nil {
 			return err
 		}
 		return success(stdout, catalog)
 	case "commands run":
-		var input map[string]any
-		if len(commandInput) > 64<<10 || json.Unmarshal([]byte(commandInput), &input) != nil || input == nil {
-			return failure("usage", "--input must be a JSON object no larger than 64 KiB.")
-		}
 		result, err := c.runCommand(ctx, commandName, commandInput, dryRun)
 		if err != nil {
 			return err
@@ -370,6 +529,43 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return success(stdout, schema)
 	}
 	return nil
+}
+
+func rejectDuplicateFlags(args []string, flags *flag.FlagSet) error {
+	seen := map[string]bool{}
+	for index := 0; index < len(args); index++ {
+		raw := args[index]
+		if raw == "--" {
+			break
+		}
+		if !strings.HasPrefix(raw, "-") || raw == "-" {
+			continue
+		}
+		nameAndValue := strings.TrimLeft(raw, "-")
+		name, _, hasValue := strings.Cut(nameAndValue, "=")
+		option := flags.Lookup(name)
+		if option == nil {
+			continue
+		}
+		if seen[name] {
+			return failure("usage", fmt.Sprintf("Option --%s may only be specified once.", name))
+		}
+		seen[name] = true
+		if !hasValue {
+			if boolean, ok := option.Value.(interface{ IsBoolFlag() bool }); !ok || !boolean.IsBoolFlag() {
+				index++
+			}
+		}
+	}
+	return nil
+}
+
+func parseResourceID(raw string) (int64, error) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, failure("usage", "Resource ID must be an integer from 1 to 9223372036854775807.")
+	}
+	return id, nil
 }
 
 func canonicalNoun(noun string) string {
@@ -410,7 +606,14 @@ func (c *client) download(ctx context.Context, resourceType string, id int64, ou
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/pdf") {
+	if resp.StatusCode != http.StatusOK {
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxJSON+1))
+		if readErr != nil || len(data) > maxJSON {
+			return failure("protocol", "API response could not be read or exceeded the size limit.")
+		}
+		return responseError(resp.StatusCode, data)
+	}
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/pdf") {
 		return failure("api", "PDF download failed or returned a non-PDF response.")
 	}
 	// Validate the header before creating a file. Never follow a signed blob URL.
@@ -420,7 +623,16 @@ func (c *client) download(ctx context.Context, resourceType string, id int64, ou
 	}
 	f, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return failure("storage", "Cannot create output file; existing files are never overwritten.")
+		switch {
+		case errors.Is(err, os.ErrExist):
+			return failure("storage", "Cannot create output file; existing files are never overwritten.")
+		case errors.Is(err, os.ErrNotExist):
+			return failure("storage", "Output directory does not exist: "+filepath.Dir(output))
+		case errors.Is(err, os.ErrPermission):
+			return failure("storage", "Permission denied while creating the output file.")
+		default:
+			return failure("storage", "Could not create the output file.")
+		}
 	}
 	ok := false
 	defer func() {

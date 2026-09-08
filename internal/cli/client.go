@@ -11,17 +11,31 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const clientID = "valiido-cli"
+const version = "0.1.0"
 const agentScope = "isms:read isms:write"
 const legacyReadScope = "documents:read tasks:read risks:read"
 const legacyFullScope = "documents:read documents:write tasks:read tasks:write risks:read risks:write"
-const maxJSON = 16 << 20
+const (
+	maxJSON           = 16 << 20
+	pageSize          = 50
+	maxListItems      = 10000
+	maxCursorBytes    = 4096
+	maxTokenBytes     = 512
+	maxPairingURI     = 4096
+	maxPairingSeconds = 15 * 60
+	maxAccessSeconds  = 60 * 60
+)
 
-var tenantPattern = regexp.MustCompile(`^[0-9]{8}$`)
+var (
+	tenantPattern      = regexp.MustCompile(`^[0-9]{8}$`)
+	opaqueTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
 
 type apiError struct {
 	Code    string `json:"code"`
@@ -64,6 +78,21 @@ type resourcePage struct {
 	Complete   bool       `json:"complete"`
 }
 
+type example struct {
+	ExampleID         int64          `json:"example_id"`
+	Label             string         `json:"label"`
+	Copied            bool           `json:"copied"`
+	Attributes        map[string]any `json:"attributes"`
+	DisplayAttributes map[string]any `json:"display_attributes,omitempty"`
+}
+
+type examplePage struct {
+	Type       string    `json:"type"`
+	Examples   []example `json:"examples"`
+	NextCursor string    `json:"next_cursor"`
+	Complete   bool      `json:"complete"`
+}
+
 type commandCatalog struct {
 	Commands []map[string]any `json:"commands"`
 }
@@ -73,6 +102,7 @@ type commandResult struct {
 	Data     map[string]any `json:"data"`
 	Summary  string         `json:"summary"`
 	Warnings []string       `json:"warnings"`
+	DryRun   bool           `json:"dry_run,omitempty"`
 	Error    *apiError      `json:"error,omitempty"`
 }
 
@@ -100,6 +130,9 @@ type client struct {
 }
 
 func newClient(server, token string) (*client, error) {
+	if len(server) > 2048 {
+		return nil, failure("usage", "Server origin cannot exceed 2048 bytes.")
+	}
 	u, err := url.Parse(server)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return nil, failure("usage", "Server must be an HTTPS origin without a path or credentials.")
@@ -116,38 +149,87 @@ func newClient(server, token string) (*client, error) {
 	}}, nil
 }
 
+// maxRateLimitRetries bounds how many times a single request is transparently
+// retried after HTTP 429. The CLI paginates lists and batches imports itself, so
+// a large operation can legitimately exceed the server's per-minute budget;
+// backing off keeps those operations correct instead of aborting mid-way.
+const maxRateLimitRetries = 6
+
+// retryBackoffBase is the first backoff step; each retry doubles it up to a cap.
+// A package var (not a const) so tests can set it to zero and run instantly.
+var retryBackoffBase = time.Second
+
 func (c *client) request(ctx context.Context, method, path string, form url.Values, authenticated bool) (*http.Response, error) {
 	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
 		return nil, failure("protocol", "Invalid API path.")
 	}
-	var body io.Reader
-	if form != nil {
-		body = strings.NewReader(form.Encode())
+	if authenticated && c.token == "" {
+		return nil, failure("auth", "Run valiido auth login first.")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
-	if err != nil {
-		return nil, failure("protocol", "Could not build API request.")
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "valiido-cli/0.1.0-draft")
-	if form != nil {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	if authenticated {
-		if c.token == "" {
-			return nil, failure("auth", "Run valiido auth login first.")
+	for attempt := 0; ; attempt++ {
+		// Rebuild the request each attempt; the form body reader is consumed by Do.
+		var body io.Reader
+		if form != nil {
+			body = strings.NewReader(form.Encode())
 		}
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
+		req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+		if err != nil {
+			return nil, failure("protocol", "Could not build API request.")
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "valiido-cli/"+version)
+		if form != nil {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if authenticated {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, failure("cancelled", "Request cancelled or pairing expired.")
+			}
+			// The original error can include URLs or server-controlled content.
+			return nil, failure("network", "Could not reach the Valiido server.")
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
+			return resp, nil
+		}
+		// A 429 is returned by the rate-limit middleware before the request is
+		// processed, so retrying (including writes) is safe. Wait, then retry.
+		delay := retryAfterDelay(resp, attempt)
+		resp.Body.Close()
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
 			return nil, failure("cancelled", "Request cancelled or pairing expired.")
+		case <-timer.C:
 		}
-		// The original error can include URLs or server-controlled content.
-		return nil, failure("network", "Could not reach the Valiido server.")
 	}
-	return resp, nil
+}
+
+// retryAfterDelay honours a numeric Retry-After header when present, otherwise
+// backs off exponentially (1,2,4,… capped at 30s) to let the rate window clear.
+func retryAfterDelay(resp *http.Response, attempt int) time.Duration {
+	const maxDelay = 30 * time.Second
+	if header := strings.TrimSpace(resp.Header.Get("Retry-After")); header != "" {
+		if seconds, err := strconv.Atoi(header); err == nil && seconds >= 0 {
+			delay := time.Duration(seconds) * time.Second
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			return delay
+		}
+	}
+	if retryBackoffBase <= 0 {
+		return 0
+	}
+	delay := retryBackoffBase << uint(attempt)
+	if delay > maxDelay || delay <= 0 {
+		delay = maxDelay
+	}
+	return delay
 }
 
 func (c *client) json(ctx context.Context, method, path string, form url.Values, authenticated, oauth bool, out any) error {
@@ -172,25 +254,7 @@ func (c *client) json(ctx context.Context, method, path string, form url.Values,
 				}
 			}
 		}
-		var payload struct {
-			Error *apiError `json:"error"`
-		}
-		if json.Unmarshal(data, &payload) == nil && payload.Error != nil &&
-			payload.Error.Code != "" && payload.Error.Message != "" {
-			return payload.Error
-		}
-		switch resp.StatusCode {
-		case 401:
-			return failure("auth", "Authorization expired or was revoked. Run valiido auth login.")
-		case 403:
-			return failure("forbidden", "This connection cannot access this resource.")
-		case 404:
-			return failure("not_found", "Resource or API endpoint not found. This draft requires the matching Rails API.")
-		case 429:
-			return failure("rate_limited", "Rate limit reached. Try again later.")
-		default:
-			return failure("api", fmt.Sprintf("API request failed (HTTP %d).", resp.StatusCode))
-		}
+		return responseError(resp.StatusCode, data)
 	}
 	if out == nil {
 		return nil
@@ -199,6 +263,74 @@ func (c *client) json(ctx context.Context, method, path string, form url.Values,
 		return failure("protocol", "Server returned an invalid JSON response.")
 	}
 	return nil
+}
+
+func responseError(status int, data []byte) error {
+	var payload struct {
+		Error *apiError `json:"error"`
+	}
+	if json.Unmarshal(data, &payload) == nil && payload.Error != nil &&
+		payload.Error.Code != "" && payload.Error.Message != "" {
+		return payload.Error
+	}
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return failure("invalid_input", "The server rejected the request input.")
+	case http.StatusUnauthorized:
+		return failure("auth", "Authorization expired or was revoked. Run valiido auth login.")
+	case http.StatusForbidden:
+		return failure("forbidden", "This connection cannot access this resource.")
+	case http.StatusNotFound:
+		return failure("not_found", "Resource or API endpoint not found.")
+	case http.StatusConflict:
+		return failure("conflict", "The resource changed or the request conflicts with its current state.")
+	case http.StatusTooManyRequests:
+		return failure("rate_limited", "Rate limit reached. Try again later.")
+	default:
+		return failure("api", fmt.Sprintf("API request failed (HTTP %d).", status))
+	}
+}
+
+func (c *client) examples(ctx context.Context, kind, query string, limit int) (examplePage, error) {
+	if limit < 1 || limit > pageSize {
+		return examplePage{}, failure("usage", "Example page size must be between 1 and 50.")
+	}
+	all := make([]example, 0)
+	cursor := ""
+	seen := map[string]bool{}
+	ids := map[int64]bool{}
+	for {
+		input, _ := json.Marshal(map[string]any{"query": query, "limit": limit, "cursor": cursor})
+		result, err := c.runCommand(ctx, kind+".list_examples", string(input), false)
+		if err != nil {
+			return examplePage{}, err
+		}
+		var page examplePage
+		if err := decodeCommandData(result, &page); err != nil {
+			return examplePage{}, err
+		}
+		if page.Type != kind || page.Examples == nil || len(page.Examples) > limit || page.Complete != (page.NextCursor == "") {
+			return examplePage{}, failure("protocol", "Example list is missing from API response.")
+		}
+		for _, item := range page.Examples {
+			if item.ExampleID <= 0 || item.Label == "" || item.Attributes == nil || ids[item.ExampleID] {
+				return examplePage{}, failure("protocol", "API returned an invalid or duplicate example.")
+			}
+			ids[item.ExampleID] = true
+			all = append(all, item)
+			if len(all) > maxListItems {
+				return examplePage{}, failure("protocol", "Example list exceeded the safety limit.")
+			}
+		}
+		cursor = page.NextCursor
+		if cursor == "" {
+			return examplePage{Type: kind, Examples: all, Complete: true}, nil
+		}
+		if seen[cursor] || len(cursor) > maxCursorBytes {
+			return examplePage{}, failure("protocol", "Example pagination did not make progress or exceeded the safety limit.")
+		}
+		seen[cursor] = true
+	}
 }
 
 func (c *client) me(ctx context.Context) (identity, error) {
@@ -214,7 +346,7 @@ func validAgentScope(scope string) bool {
 	return scope == agentScope || scope == "isms:read" || scope == legacyReadScope || scope == legacyFullScope
 }
 
-func (c *client) resources(ctx context.Context, kind string) ([]resource, error) {
+func (c *client) resources(ctx context.Context, kind, query string) ([]resource, error) {
 	if strings.TrimSpace(kind) == "" {
 		return nil, failure("usage", "Resource type is required.")
 	}
@@ -223,7 +355,7 @@ func (c *client) resources(ctx context.Context, kind string) ([]resource, error)
 	seen := map[string]bool{}
 	ids := map[int64]bool{}
 	for {
-		input, _ := json.Marshal(map[string]any{"limit": 50, "cursor": cursor})
+		input, _ := json.Marshal(map[string]any{"limit": pageSize, "cursor": cursor, "query": query})
 		var page resourcePage
 		result, err := c.runCommand(ctx, kind+".list", string(input), false)
 		if err != nil {
@@ -232,7 +364,7 @@ func (c *client) resources(ctx context.Context, kind string) ([]resource, error)
 		if err := decodeCommandData(result, &page); err != nil {
 			return nil, err
 		}
-		if page.Type != kind || page.Resources == nil || page.Complete != (page.NextCursor == "") {
+		if page.Type != kind || page.Resources == nil || len(page.Resources) > pageSize || page.Complete != (page.NextCursor == "") {
 			return nil, failure("protocol", "Resource list is missing from API response.")
 		}
 		for _, item := range page.Resources {
@@ -244,12 +376,15 @@ func (c *client) resources(ctx context.Context, kind string) ([]resource, error)
 			}
 			ids[item.ID] = true
 			all = append(all, item)
+			if len(all) > maxListItems {
+				return nil, failure("protocol", "Resource list exceeded the safety limit.")
+			}
 		}
 		cursor = page.NextCursor
 		if cursor == "" {
 			return all, nil
 		}
-		if seen[cursor] || len(cursor) > 4096 || len(seen) >= 10000 {
+		if seen[cursor] || len(cursor) > maxCursorBytes {
 			return nil, failure("protocol", "API pagination did not make progress or exceeded the safety limit.")
 		}
 		seen[cursor] = true
@@ -281,9 +416,20 @@ func validateResource(item resource, kind string) error {
 	return nil
 }
 
-func (c *client) commands(ctx context.Context) (commandCatalog, error) {
+func (c *client) commands(ctx context.Context, query string, limit int) (commandCatalog, error) {
 	var catalog commandCatalog
-	err := c.json(ctx, "GET", apiPaths["api/commands#index"], nil, true, false, &catalog)
+	params := url.Values{}
+	if query != "" {
+		params.Set("query", query)
+	}
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+	}
+	path := apiPaths["api/commands#index"]
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	err := c.json(ctx, "GET", path, nil, true, false, &catalog)
 	if err == nil && catalog.Commands == nil {
 		err = failure("protocol", "Command catalog is missing from API response.")
 	}
@@ -297,8 +443,8 @@ func (c *client) runCommand(ctx context.Context, name, input string, dryRun bool
 		form.Set("dry_run", "true")
 	}
 	err := c.json(ctx, "POST", apiPaths["api/commands#create"], form, true, false, &result)
-	if err == nil && result.Summary == "" {
-		err = failure("protocol", "Command result is missing from API response.")
+	if err == nil {
+		err = validateCommandResult(result)
 	}
 	return result, err
 }
@@ -314,14 +460,27 @@ func decodeCommandData(result commandResult, out any) error {
 func (c *client) resolveCommand(ctx context.Context, action, token string) (commandResult, error) {
 	var result commandResult
 	err := c.json(ctx, "POST", apiPaths["api/commands#"+action], url.Values{"confirmation_token": {token}}, true, false, &result)
-	if err == nil && action == "confirm" && result.Summary == "" {
-		err = failure("protocol", "Command result is missing from API response.")
+	if err == nil {
+		err = validateCommandResult(result)
 	}
 	return result, err
 }
 
+func validateCommandResult(result commandResult) error {
+	if !result.OK {
+		if result.Error != nil && result.Error.Code != "" && result.Error.Message != "" {
+			return result.Error
+		}
+		return failure("protocol", "Command result is missing from API response.")
+	}
+	if result.Error != nil || result.Summary == "" {
+		return failure("protocol", "Command result is missing from API response.")
+	}
+	return nil
+}
+
 func (c *client) documents(ctx context.Context) ([]document, error) {
-	items, err := c.resources(ctx, "documents")
+	items, err := c.resources(ctx, "documents", "")
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +545,9 @@ func (c *client) pair(ctx context.Context, instructions io.Writer) (tokenRespons
 	}
 	u, err := url.Parse(device.VerificationURI)
 	base, _ := url.Parse(c.base)
-	if err != nil || u.User != nil || u.Scheme != base.Scheme || u.Host != base.Host || u.Fragment != "" || device.DeviceCode == "" || !regexp.MustCompile(`^[A-Z0-9-]{6,16}$`).MatchString(device.UserCode) || device.ExpiresIn < 1 || device.ExpiresIn > 900 {
+	if err != nil || len(device.VerificationURI) > maxPairingURI || len(device.VerificationURIComplete) > maxPairingURI ||
+		u.User != nil || u.Scheme != base.Scheme || u.Host != base.Host || u.Fragment != "" || !validOpaqueToken(device.DeviceCode) ||
+		!regexp.MustCompile(`^[A-Z0-9-]{6,16}$`).MatchString(device.UserCode) || device.ExpiresIn < 1 || device.ExpiresIn > maxPairingSeconds {
 		return tokenResponse{}, failure("protocol", "Server returned invalid pairing instructions.")
 	}
 	openURI := u
@@ -404,7 +565,9 @@ func (c *client) pair(ctx context.Context, instructions io.Writer) (tokenRespons
 	if interval < 1 || interval > 60 {
 		return tokenResponse{}, failure("protocol", "Invalid pairing interval.")
 	}
-	fmt.Fprintf(instructions, "Open %s\nConfirm code: %s\nOnly approve the connection you just started.\n", openURI.String(), device.UserCode)
+	if _, err := fmt.Fprintf(instructions, "Open %s\nConfirm code: %s\nOnly approve the connection you just started.\n", openURI.String(), device.UserCode); err != nil {
+		return tokenResponse{}, failure("output", "Could not write pairing instructions.")
+	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(device.ExpiresIn)*time.Second)
 	defer cancel()
 	for {
@@ -446,10 +609,14 @@ func localAgentName() string {
 }
 
 func validateToken(token tokenResponse, expectedScope string) error {
-	if token.AccessToken == "" || token.RefreshToken == "" || !strings.EqualFold(token.TokenType, "Bearer") ||
+	if !validOpaqueToken(token.AccessToken) || !validOpaqueToken(token.RefreshToken) || !strings.EqualFold(token.TokenType, "Bearer") ||
 		!validAgentScope(token.Scope) || (expectedScope != "" && token.Scope != expectedScope) ||
-		token.ExpiresIn < 1 || token.ExpiresIn > 3600 {
+		token.ExpiresIn < 1 || token.ExpiresIn > maxAccessSeconds {
 		return failure("protocol", "Server returned an invalid or over-scoped token.")
 	}
 	return nil
+}
+
+func validOpaqueToken(value string) bool {
+	return len(value) > 0 && len(value) <= maxTokenBytes && opaqueTokenPattern.MatchString(value)
 }

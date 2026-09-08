@@ -13,16 +13,21 @@ the language of existing content unless the user requests a translation.
 
 - Run `valiido auth status` first. If no account is connected, start
   `valiido auth login` and let the user approve the displayed browser code.
-- Run `valiido command list` to discover the live resource types, actions, and
-  input schemas. Do not rely on a remembered list of product areas.
+- Run `valiido command list --query TEXT --limit N` to discover the relevant
+  live resource types, actions, and input schemas. Do not rely on a remembered
+  list of product areas or load the complete catalog when a narrow query works.
 - Use `valiido resource list TYPE` and `valiido resource read TYPE ID` for
-  ordinary reads. Lists follow all pages automatically.
+  ordinary reads. Lists follow pages automatically, accept `--query`, and stop
+  at the CLI's 10,000-record safety limit.
 - Use `valiido resource examples TYPE` to list copyable examples, optionally
-  narrowed with `--query TEXT` and `--limit N`.
+  narrowed with `--query TEXT`. Up to 10,000 records are loaded; `--limit N`
+  controls the page size.
 - Use `valiido command run TYPE.ACTION --input JSON` for examples, changes,
   trash, restoration, guide progress, and other actions from the live catalog.
 - Export any readable record with
   `valiido resource pdf TYPE ID --output FILE.pdf`.
+- Import large JSON arrays with `valiido resource import TYPE --file FILE`.
+  Preview with `--dry-run`, then review and confirm every returned batch token.
 
 ## Working with ISMS data
 
@@ -31,8 +36,8 @@ the language of existing content unless the user requests a translation.
 - Rich-text updates must send complete HTML. Preserve meaningful headings,
   lists, tables, links, attachments, and formatting; do not replace HTML with
   Markdown or plain text accidentally.
-- Use `valiido resource examples TYPE` before creating domain-specific material when Valiido
-  examples can provide the intended structure. Copy a suitable example and
+- Use `valiido resource examples TYPE` before creating domain-specific material
+  when Valiido examples can provide the intended structure. Copy a suitable example and
   adapt its placeholders to facts known about the tenant. Do not invent dates,
   owners, systems, certifications, or company facts.
 - For guide work, use `guide_items.next` or `guide_items.show`, complete the
