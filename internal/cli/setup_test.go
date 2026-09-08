@@ -28,6 +28,10 @@ func TestInstallSkill(t *testing.T) {
 			if err := os.WriteFile(path, []byte("custom skill"), 0644); err != nil {
 				t.Fatal(err)
 			}
+			reference, err := os.ReadFile(filepath.Join(filepath.Dir(path), "references", "importing.md"))
+			if err != nil || string(reference) != skills.ValiidoImporting {
+				t.Fatal("bundled import reference was not installed")
+			}
 			if err := installSkill(path, false); err == nil {
 				t.Fatal("must reject an existing different skill")
 			}
@@ -100,6 +104,10 @@ func TestSetupInstallsExactSkillForCodexClaudeAndAll(t *testing.T) {
 				content, err := os.ReadFile(path)
 				if expected && (err != nil || string(content) != skills.Valiido) {
 					t.Errorf("%s skill was not installed byte-for-byte", name)
+				}
+				reference, referenceErr := os.ReadFile(filepath.Join(filepath.Dir(path), "references", "importing.md"))
+				if expected && (referenceErr != nil || string(reference) != skills.ValiidoImporting) {
+					t.Errorf("%s import reference was not installed byte-for-byte", name)
 				}
 				if !expected && !os.IsNotExist(err) {
 					t.Errorf("unexpected %s skill installation", name)

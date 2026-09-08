@@ -100,7 +100,7 @@ func TestPublicDocumentationUsesTheCurrentCLISurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	documents := map[string]string{"README.md": string(readme), "skills/valiido/SKILL.md": skills.Valiido}
+	documents := map[string]string{"README.md": string(readme), "skills/valiido/SKILL.md": skills.Valiido, "skills/valiido/references/importing.md": skills.ValiidoImporting}
 	commands := regexp.MustCompile(`valiido[ \t]+([a-z]+)(?:[ \t]+([a-z]+))?`)
 	flags := regexp.MustCompile(`--[a-z][a-z-]*`)
 	for name, document := range documents {

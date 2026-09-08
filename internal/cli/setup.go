@@ -69,7 +69,7 @@ func setup(args []string, stdout io.Writer) error {
 
 func secureSkillPath(home, agentDirectory string) (string, error) {
 	current := home
-	for _, component := range []string{agentDirectory, "skills", "valiido"} {
+	for _, component := range []string{agentDirectory, "skills", "valiido", "references"} {
 		current = filepath.Join(current, component)
 		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
@@ -82,10 +82,19 @@ func secureSkillPath(home, agentDirectory string) (string, error) {
 			return "", failure("storage", "Valiido skill directories must be private from untrusted writers and cannot be symlinks.")
 		}
 	}
-	return filepath.Join(current, "SKILL.md"), nil
+	return filepath.Join(filepath.Dir(current), "SKILL.md"), nil
 }
 
 func checkSkill(path string, force bool) error {
+	for relativePath, content := range skills.ValiidoFiles {
+		if err := checkSkillFile(filepath.Join(filepath.Dir(path), filepath.FromSlash(relativePath)), content, force); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkSkillFile(path, expected string, force bool) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -93,8 +102,8 @@ func checkSkill(path string, force bool) error {
 	if err != nil || !info.Mode().IsRegular() {
 		return failure("storage", "Cannot safely replace the existing Valiido skill.")
 	}
-	content, readErr := readBoundedFile(path, int64(len(skills.Valiido)))
-	if readErr == nil && string(content) == skills.Valiido {
+	content, readErr := readBoundedFile(path, int64(len(expected)))
+	if readErr == nil && string(content) == expected {
 		return nil
 	}
 	if !force {
@@ -104,16 +113,26 @@ func checkSkill(path string, force bool) error {
 }
 
 func installSkill(path string, force bool) error {
+	for relativePath, content := range skills.ValiidoFiles {
+		filePath := filepath.Join(filepath.Dir(path), filepath.FromSlash(relativePath))
+		if err := installSkillFile(filePath, content, force); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installSkillFile(path, expected string, force bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return failure("storage", "Cannot create the Valiido skill directory.")
 	}
-	if err := checkSkill(path, force); err != nil {
+	if err := checkSkillFile(path, expected, force); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if errors.Is(err, os.ErrExist) {
-		content, readErr := readBoundedFile(path, int64(len(skills.Valiido)))
-		if readErr == nil && string(content) == skills.Valiido {
+		content, readErr := readBoundedFile(path, int64(len(expected)))
+		if readErr == nil && string(content) == expected {
 			if os.Chmod(path, 0644) != nil {
 				return failure("storage", "Cannot secure the installed Valiido skill.")
 			}
@@ -124,14 +143,14 @@ func installSkill(path string, force bool) error {
 			if statErr != nil || !info.Mode().IsRegular() || os.Remove(path) != nil {
 				return failure("storage", "Cannot safely replace the existing Valiido skill.")
 			}
-			return installSkill(path, false)
+			return installSkillFile(path, expected, false)
 		}
 		return failure("storage", "A different Valiido skill already exists. Move it aside before running setup again.")
 	}
 	if err != nil {
 		return failure("storage", "Cannot create the Valiido skill file.")
 	}
-	_, writeErr := io.WriteString(file, skills.Valiido)
+	_, writeErr := io.WriteString(file, expected)
 	closeErr := file.Close()
 	if writeErr != nil || closeErr != nil {
 		_ = os.Remove(path)

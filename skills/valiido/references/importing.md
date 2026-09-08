@@ -1,0 +1,94 @@
+# Importing existing customer data
+
+Use this workflow whenever Valiido receives an existing customer dataset. Keep
+source files and all derived working files outside source repositories. Protect
+temporary files and never place customer content, names, credentials, tokens, or
+filenames in skills, documentation, tests, fixtures, logs, or command examples.
+
+## Inspect before writing
+
+1. Inventory every source file, sheet, section, and attachment. Ignore temporary
+   office lock files, empty rows, repeated headings, totals, explanatory sample
+   rows, and other non-record content.
+2. Discover the live commands and schemas for every intended resource type.
+3. List all available examples for each target type. Build a source-to-target
+   mapping that records the resource type, suitable example if any, field map,
+   unmapped fields, and expected record count.
+4. Identify duplicate source records and overlap between files before import.
+   Do not infer that repeated rows are separate records merely because they
+   occur in separate sheets or files.
+
+## Choose the correct creation path
+
+- Use `copy_from_example` when an example is genuinely the same kind of policy,
+  procedure, task, risk, checklist, or other resource. Read the copied record,
+  then update that record with the complete customer data. Use `copy_again` only
+  for distinct records that legitimately derive from the same example.
+- Do not attach an unrelated example just to make a reference exist. Create
+  without an example only when the catalog has no suitable match, and include
+  that gap in the final report.
+- For documents, prefer an exact example, then the closest example in the same
+  document domain. Preserve the example reference while replacing its content.
+- Spreadsheet rows belong in their native resource types when their fields map
+  reliably. Retain a document copy only when the source itself is a controlled
+  record whose original layout or context matters.
+
+## Preserve customer material
+
+- Decide explicitly for each document whether its value lies in editable
+  content or in the original artifact, and honor the user's choice. Policies,
+  procedures, manuals, plans, and other structured text are extraction-worthy:
+  convert readable Word and PDF sources to safe, complete HTML so users can
+  search and edit them in Valiido. Preserve headings, paragraphs, lists,
+  tables, links, and meaningful metadata; remove generated tables of contents,
+  repeated headers and footers, page numbers, blank pages, and conversion
+  debris. Visually compare the result with the complete source.
+- Keep the source as a PDF document when the original itself is the evidence or
+  when extraction would materially lose meaning or authenticity, such as a
+  handwritten or scanned protocol, signed record, completed form, certificate,
+  drawing, or layout-dependent evidence. Do not choose PDF merely because the
+  source file is a PDF. When the user's intent is unclear and the distinction
+  affects usefulness, ask before import.
+- If a PDF document is the right choice, visually inspect it before upload. If
+  an example was copied, set `document_type` to `pdf`, clear the copied rich-text
+  content, and assign the uploaded `pdf_file` in the same update so the example
+  reference remains attached.
+- Use only attachment identifiers returned by `valiido document upload` for the
+  active tenant. Never submit a local path or invented identifier.
+- Preserve every labeled source value. Map supported values to native fields and
+  append remaining values to one structured import comment. If comments are not
+  supported, use an appropriate free-text field or report the gap. Never discard
+  a value silently.
+
+## Execute safely
+
+- Keep customer JSON in mode-0600 files and use `--input-file`.
+- For bulk imports, validate the complete JSON file with `--dry-run`, review its
+  counts and representative previews, then prepare and confirm every batch.
+- Read current versions immediately before dependent updates. On a conflict,
+  stop and compare instead of overwriting another change.
+- Do not remove or replace existing customer records unless the request clearly
+  authorizes that mutation and the source material remains available.
+
+## Mandatory quality gate
+
+Before reporting success, verify all of the following through the CLI:
+
+- Actual counts match the source-to-target mapping.
+- No header, sample, total, blank, or duplicate rows became resources.
+- Every resource with a suitable example has the intended example reference;
+  every resource without one has a documented reason.
+- At least three representative records per imported resource type were read
+  back in full, including one complex record when present.
+- Imported documents were opened or rendered and visually checked; rich text has
+  no conversion debris and preserves the source structure, while retained PDFs
+  are readable, attached to the right record, and have a documented reason for
+  remaining artifacts instead of editable content.
+- Relationships, comments, enums, dates, and tenant-scoped identifiers survived
+  the round trip.
+- No source value was silently lost and no customer material entered a source
+  repository or retained command line.
+
+If any check fails, describe the import as incomplete, correct the affected
+records, and repeat the gate. Report final counts, unmatched examples, preserved
+comments, skipped source rows, and any remaining product gaps.
