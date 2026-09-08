@@ -1,6 +1,20 @@
 #!/bin/sh
 set -eu
-test -z "$(gofmt -l .)"
+
+cd "$(dirname "$0")/.."
+
+quality_tmp=$(mktemp -d)
+trap 'rm -rf "$quality_tmp"' EXIT HUP INT TERM
+
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+  printf 'Files need gofmt:\n%s\n' "$unformatted" >&2
+  exit 1
+fi
+
+go mod verify
+go mod tidy -diff
 go vet ./...
 go test -race ./...
-go build -o dist/valiido ./cmd/valiido
+go build -trimpath -o "$quality_tmp/valiido" ./cmd/valiido
+GOOS=windows GOARCH=amd64 go build -trimpath -o "$quality_tmp/valiido.exe" ./cmd/valiido

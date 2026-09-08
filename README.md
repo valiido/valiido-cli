@@ -110,6 +110,11 @@ must use HTTPS.
 bin/quality
 ```
 
+The same standalone check runs for every pull request and every push to `main`.
+It formats, verifies, vets, race-tests, and cross-compiles only this repository.
+The workflow has read-only repository access, receives no application secrets,
+and never checks out or references the private Valiido application.
+
 The Rails repository provides `bin/check-agent-api` for the cross-repository API
 contract, generated-route drift, and security checks. The CLI help is generated
 from its command definitions; resources, actions, and schemas remain live server
