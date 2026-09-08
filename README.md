@@ -35,7 +35,7 @@ Changes use the commands advertised by the connected account:
 
 ```sh
 valiido command run tasks.update \
-  --input '{"id":42,"attributes":{"title":"Review access"}}' \
+  --input '{"id":42,"version":3,"attributes":{"title":"Review access"}}' \
   --profile work
 valiido command confirm CONFIRMATION_TOKEN --profile work
 ```
@@ -119,3 +119,8 @@ The Rails repository provides `bin/check-agent-api` for the cross-repository API
 contract, generated-route drift, and security checks. The CLI help is generated
 from its command definitions; resources, actions, and schemas remain live server
 data instead of copied documentation.
+
+Resource reads include an integer `version`. When a command's live input schema
+requires `version`, send the value from the latest read. A conflict means the
+resource changed after it was read: read it again, review the new state, and only
+then prepare a new change. The CLI never retries conflicting writes automatically.

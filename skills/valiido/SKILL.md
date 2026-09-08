@@ -33,6 +33,9 @@ the language of existing content unless the user requests a translation.
 
 - Read the current record before an update that depends on its content or
   structure. Update only the requested fields and preserve other values.
+- When a command's live input schema requires `version`, send the value returned
+  by the latest read. On a conflict, read and review the resource again; never
+  retry the old write automatically.
 - Rich-text updates must send complete HTML. Preserve meaningful headings,
   lists, tables, links, attachments, and formatting; do not replace HTML with
   Markdown or plain text accidentally.

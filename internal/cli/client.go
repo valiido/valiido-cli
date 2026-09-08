@@ -54,6 +54,7 @@ type identity struct {
 
 type document struct {
 	ID           int64  `json:"id"`
+	Version      int64  `json:"version"`
 	Title        string `json:"title"`
 	Kind         string `json:"kind"`
 	ParentID     *int64 `json:"parent_id"`
@@ -65,6 +66,7 @@ type document struct {
 type resource struct {
 	Type              string         `json:"type"`
 	ID                int64          `json:"id"`
+	Version           *int64         `json:"version"`
 	Label             string         `json:"label"`
 	Attributes        map[string]any `json:"attributes"`
 	DisplayAttributes map[string]any `json:"display_attributes,omitempty"`
@@ -336,7 +338,7 @@ func (c *client) examples(ctx context.Context, kind, query string, limit int) (e
 func (c *client) me(ctx context.Context) (identity, error) {
 	var me identity
 	err := c.json(ctx, "GET", apiPaths["api/identities#show"], nil, true, false, &me)
-	if err == nil && (!tenantPattern.MatchString(me.TenantNumber) || me.TenantNumber == "00000000" || !validAgentScope(me.Scope)) {
+	if err == nil && (!tenantPattern.MatchString(me.TenantNumber) || !validAgentScope(me.Scope)) {
 		err = failure("protocol", "Server did not return a regular tenant with the expected access.")
 	}
 	return me, err
@@ -410,7 +412,7 @@ func (c *client) readResource(ctx context.Context, kind string, id int64) (resou
 }
 
 func validateResource(item resource, kind string) error {
-	if item.ID <= 0 || item.Type != kind || item.Attributes == nil {
+	if item.ID <= 0 || item.Version == nil || *item.Version < 0 || item.Type != kind || item.Attributes == nil {
 		return failure("protocol", "API returned an invalid resource.")
 	}
 	return nil
@@ -515,7 +517,7 @@ func (c *client) read(ctx context.Context, id int64) (document, error) {
 }
 
 func documentFromResource(item resource) (document, error) {
-	d := document{ID: item.ID}
+	d := document{ID: item.ID, Version: *item.Version}
 	var ok bool
 	d.Title, ok = item.Attributes["title"].(string)
 	if !ok {

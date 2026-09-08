@@ -637,7 +637,7 @@ func TestCLIRefreshPreservesLegacyReadScopeAndLogout(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(identity{TenantNumber: "12345678", Scope: legacyReadScope, AgentName: "Agent"})
 		case "/api/v1/commands":
-			writeCommandResult(w, resource{Type: "documents", ID: 42, Label: "Test", Attributes: map[string]any{
+			writeCommandResult(w, resource{Type: "documents", ID: 42, Version: resourceVersion(2), Label: "Test", Attributes: map[string]any{
 				"title": "Test", "kind": "rich_text", "content_state": "text", "content_text": "Hello\x1b[31m\nWorld",
 			}})
 		default:
@@ -790,7 +790,24 @@ func TestRateLimitRetryIsBoundedAndCancellable(t *testing.T) {
 }
 
 func documentResource(id int64, kind string) resource {
-	return resource{Type: "documents", ID: id, Label: "Document", Attributes: map[string]any{"title": "Document", "kind": kind}}
+	return resource{Type: "documents", ID: id, Version: resourceVersion(3), Label: "Document", Attributes: map[string]any{"title": "Document", "kind": kind}}
+}
+
+func resourceVersion(value int64) *int64 { return &value }
+
+func TestResourceVersionIsRequiredAndNonNegative(t *testing.T) {
+	for _, item := range []resource{
+		{Type: "tasks", ID: 1, Attributes: map[string]any{}},
+		{Type: "tasks", ID: 1, Version: resourceVersion(-1), Attributes: map[string]any{}},
+	} {
+		if err := validateResource(item, "tasks"); err == nil {
+			t.Fatalf("accepted invalid resource version: %#v", item.Version)
+		}
+	}
+
+	if err := validateResource(resource{Type: "tasks", ID: 1, Version: resourceVersion(0), Attributes: map[string]any{}}, "tasks"); err != nil {
+		t.Fatalf("rejected initial resource version: %v", err)
+	}
 }
 
 func writeCommandResult(w http.ResponseWriter, data any) {
@@ -819,7 +836,7 @@ func TestTokenScopeAndHTTPErrorRedaction(t *testing.T) {
 func TestListResponsesStayWithinClientSafetyBounds(t *testing.T) {
 	resources := make([]resource, pageSize+1)
 	for index := range resources {
-		resources[index] = resource{Type: "assets", ID: int64(index + 1), Attributes: map[string]any{}}
+		resources[index] = resource{Type: "assets", ID: int64(index + 1), Version: resourceVersion(0), Attributes: map[string]any{}}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeCommandResult(w, resourcePage{Type: "assets", Resources: resources, Complete: true})
@@ -843,6 +860,7 @@ func TestResourceListHasAnAggregateSafetyLimit(t *testing.T) {
 			items[index] = resource{
 				Type:       "assets",
 				ID:         int64(request*pageSize + index + 1),
+				Version:    resourceVersion(0),
 				Attributes: map[string]any{},
 			}
 		}
