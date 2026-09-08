@@ -16,6 +16,23 @@ const (
 	importBatchSize  = 100
 )
 
+func readCommandInputFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", failure("usage", "Could not open the command input file.")
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", failure("usage", "Command input file must be a regular file.")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxCommandInput+1))
+	if err != nil || len(data) > maxCommandInput {
+		return "", failure("usage", "Command input file could not be read or exceeds 64 KiB.")
+	}
+	return string(data), nil
+}
+
 type importBatchResult struct {
 	Index                 int    `json:"index"`
 	Count                 int    `json:"count"`

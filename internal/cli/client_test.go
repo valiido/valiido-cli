@@ -173,6 +173,10 @@ func TestInvalidCLIInputFailsBeforeCredentialsOrNetwork(t *testing.T) {
 	if err := os.WriteFile(invalidImport, []byte(`[{`), 0600); err != nil {
 		t.Fatal(err)
 	}
+	oversizedCommandInput := filepath.Join(t.TempDir(), "oversized-command.json")
+	if err := os.WriteFile(oversizedCommandInput, []byte(strings.Repeat("x", maxCommandInput+1)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	cases := [][]string{
 		{"auth"},
 		{"resource", "list"},
@@ -184,6 +188,9 @@ func TestInvalidCLIInputFailsBeforeCredentialsOrNetwork(t *testing.T) {
 		{"resource", "pdf", "assets", "1"},
 		{"command", "run"},
 		{"command", "run", "assets.create", "--input", "{"},
+		{"command", "run", "assets.create", "--input", "{}", "--input-file", invalidImport},
+		{"command", "run", "assets.create", "--input-file", invalidImport},
+		{"command", "run", "assets.create", "--input-file", oversizedCommandInput},
 		{"command", "confirm"},
 		{"command", "confirm", "has whitespace"},
 		{"command", "list", "--profile", "one", "--profile", "two"},

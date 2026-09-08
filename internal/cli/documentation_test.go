@@ -49,7 +49,7 @@ func TestEveryDocumentedOptionBelongsToItsCommand(t *testing.T) {
 	values := map[string]string{
 		"--agent": "codex", "--profile": "work", "--server": "http://127.0.0.1:3000",
 		"--query": "text", "--limit": "1", "--file": "synthetic.json",
-		"--output": "synthetic.pdf", "--input": `{}`,
+		"--output": "synthetic.pdf", "--input": `{}`, "--input-file": "synthetic.json",
 	}
 	for _, definition := range commandDefinitions {
 		if definition.name == "help" || definition.name == "version" {

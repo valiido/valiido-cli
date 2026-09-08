@@ -35,6 +35,7 @@ var commandDefinitions = []commandDefinition{
 	{"auth logout", "valiido auth logout [--profile NAME]"},
 	{"documents list", "valiido document list [--profile NAME] [--json]"},
 	{"documents read", "valiido document read ID [--text | --output FILE.pdf] [--profile NAME] [--json]"},
+	{"documents upload", "valiido document upload FILE.pdf [--profile NAME]"},
 	{"tasks list", "valiido task list [--profile NAME] [--json]"},
 	{"tasks read", "valiido task read ID [--profile NAME] [--json]"},
 	{"risks list", "valiido risk list [--profile NAME] [--json]"},
@@ -45,7 +46,7 @@ var commandDefinitions = []commandDefinition{
 	{"resources import", "valiido resource import TYPE --file FILE.json [--dry-run] [--profile NAME]"},
 	{"resources pdf", "valiido resource pdf TYPE ID --output FILE.pdf [--profile NAME]"},
 	{"commands list", "valiido command list [--query TEXT] [--limit N] [--profile NAME] [--json]"},
-	{"commands run", "valiido command run NAME [--input JSON] [--dry-run] [--profile NAME]"},
+	{"commands run", "valiido command run NAME [--input JSON | --input-file FILE.json] [--dry-run] [--profile NAME]"},
 	{"commands confirm", "valiido command confirm TOKEN [--profile NAME]"},
 	{"commands reject", "valiido command reject TOKEN [--profile NAME]"},
 	{"api schema", "valiido api schema [--profile NAME]"},
@@ -80,6 +81,7 @@ Examples retrieves up to 10,000 records; --limit controls the page size.
 Import accepts a JSON array, validates every batch, and returns confirmation tokens.
 Use command list to discover resource types, actions and input schemas.
 IDs are tenant-scoped. PDFs require --output; files are never overwritten.
+PDF upload returns a signed attachment identifier for a document command.
 Login shows a URL and code for browser approval. It does not open a browser.
 Use --server http://127.0.0.1:3000 for local development.
 `
@@ -181,6 +183,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	rest := args[2:]
 	var id int64
 	var resourceType string
+	var uploadFile string
 	if command == "documents read" || command == "tasks read" || command == "risks read" {
 		if len(rest) == 0 {
 			return failure("usage", "Expected a positive resource ID before options.")
@@ -191,6 +194,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		rest = rest[1:]
+	}
+	if command == "documents upload" {
+		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
+			return failure("usage", "Expected a PDF filename before options.")
+		}
+		uploadFile, rest = rest[0], rest[1:]
 	}
 	if command == "resources list" || command == "resources examples" || command == "resources import" {
 		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
@@ -248,7 +257,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(io.Discard)
 	profile := flags.String("profile", "default", "Credential profile")
 	jsonOutput := flags.Bool("json", false, "JSON output (default)")
-	var server, output, commandInput, query, importFile string
+	var server, output, commandInput, commandInputFile, query, importFile string
 	var limit int
 	var fileCredentials, text, dryRun bool
 	switch command {
@@ -273,8 +282,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.IntVar(&limit, "limit", 0, "Maximum number of commands (1-250)")
 	case "commands run":
 		flags.StringVar(&commandInput, "input", "{}", "Command input as a JSON object")
+		flags.StringVar(&commandInputFile, "input-file", "", "Read command input from a JSON file")
 		flags.BoolVar(&dryRun, "dry-run", false, "Validate and preview without changing data")
-	case "auth status", "auth logout", "documents list", "tasks list", "tasks read", "risks list", "risks read", "resources read", "commands confirm", "commands reject", "api schema":
+	case "auth status", "auth logout", "documents list", "documents upload", "tasks list", "tasks read", "risks list", "risks read", "resources read", "commands confirm", "commands reject", "api schema":
 	default:
 		return failure("usage", "Unknown command. Run valiido --help.")
 	}
@@ -289,8 +299,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return failure("usage", "Invalid options. Run valiido --help.")
 	}
 	limitProvided := false
+	commandInputProvided := false
 	flags.Visit(func(option *flag.Flag) {
 		limitProvided = limitProvided || option.Name == "limit"
+		commandInputProvided = commandInputProvided || option.Name == "input"
 	})
 	if flags.NArg() != 0 || (text && (output != "" || *jsonOutput)) || (command == "resources pdf" && output == "") {
 		return failure("usage", "Unexpected arguments or incompatible output options.")
@@ -309,8 +321,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	var parsedCommandInput map[string]any
 	if command == "commands run" {
+		if commandInputProvided && commandInputFile != "" {
+			return failure("usage", "Use either --input or --input-file, not both.")
+		}
+		if commandInputFile != "" {
+			var err error
+			commandInput, err = readCommandInputFile(commandInputFile)
+			if err != nil {
+				return err
+			}
+		}
 		if len(commandInput) > maxCommandInput {
-			return failure("usage", "--input cannot exceed 64 KiB.")
+			return failure("usage", "Command input cannot exceed 64 KiB.")
 		}
 		var value any
 		if err := json.Unmarshal([]byte(commandInput), &value); err != nil {
@@ -456,6 +478,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		return success(stdout, d)
+	case "documents upload":
+		upload, err := c.uploadPDF(ctx, uploadFile)
+		if err != nil {
+			return err
+		}
+		return success(stdout, upload)
 	case "tasks list", "risks list":
 		kind := strings.Fields(command)[0]
 		items, err := c.resources(ctx, kind, "")
