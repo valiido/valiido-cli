@@ -218,6 +218,27 @@ func TestInvalidCLIInputFailsBeforeCredentialsOrNetwork(t *testing.T) {
 	}
 }
 
+func TestIncompatibleOptionsReturnSpecificUsageMessages(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tests := []struct {
+		args    []string
+		message string
+	}{
+		{[]string{"document", "read", "1", "--text", "--json"}, "Use either --text or --json"},
+		{[]string{"resource", "pdf", "assets", "1"}, "--output is required for resource pdf"},
+		{[]string{"command", "list", "unexpected"}, "Unexpected positional arguments"},
+	}
+	for _, test := range tests {
+		var out bytes.Buffer
+		if code := Run(context.Background(), test.args, &out, io.Discard); code != 2 {
+			t.Fatalf("%v returned %d: %s", test.args, code, out.String())
+		}
+		if !strings.Contains(out.String(), test.message) {
+			t.Fatalf("%v returned a vague message: %s", test.args, out.String())
+		}
+	}
+}
+
 func TestHTTPStatusMapping(t *testing.T) {
 	// The 429 case exercises the rate-limit retry loop; run it without real waits.
 	defer func(base time.Duration) { retryBackoffBase = base }(retryBackoffBase)
@@ -253,6 +274,92 @@ func TestHTTPStatusMapping(t *testing.T) {
 				t.Fatalf("status %d mapped to %#v", test.status, err)
 			}
 		})
+	}
+}
+
+func TestAPIErrorPreservesStructuredDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		io.WriteString(w, `{"error":{"code":"validation_failed","message":"Two rows failed."},"data":{"errors":[{"index":2},{"index":4}]}}`)
+	}))
+	defer server.Close()
+	c, _ := newClient(server.URL, "token")
+	err := c.json(context.Background(), "POST", "/test", nil, true, false, nil)
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.Details == nil {
+		t.Fatalf("structured details were lost: %#v", err)
+	}
+	errorsList, ok := apiErr.Details["errors"].([]any)
+	if !ok || len(errorsList) != 2 {
+		t.Fatalf("unexpected details: %#v", apiErr.Details)
+	}
+}
+
+func TestAuthenticatedRequestRefreshesBeforeExpiry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			t.Fatalf("request used stale access token: %q", r.Header.Get("Authorization"))
+		}
+		io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	c, _ := newClient(server.URL, "stale")
+	c.expiresAt = time.Now().Add(30 * time.Second)
+	c.refresh = func(context.Context, string) (string, time.Time, error) {
+		return "fresh", time.Now().Add(15 * time.Minute), nil
+	}
+	if err := c.json(context.Background(), "GET", "/test", nil, true, false, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthenticatedRequestRefreshesOnceAfterUnauthorized(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			t.Fatalf("retry used wrong access token: %q", r.Header.Get("Authorization"))
+		}
+		io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	c, _ := newClient(server.URL, "stale")
+	c.refresh = func(context.Context, string) (string, time.Time, error) {
+		return "fresh", time.Now().Add(15 * time.Minute), nil
+	}
+	if err := c.json(context.Background(), "GET", "/test", nil, true, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d, want 2", requests)
+	}
+}
+
+func TestRateLimitRetryReportsProgressOnStderr(t *testing.T) {
+	defer func(base time.Duration) { retryBackoffBase = base }(retryBackoffBase)
+	retryBackoffBase = 0
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	c, _ := newClient(server.URL, "token")
+	var log bytes.Buffer
+	c.retryLog = &log
+	if err := c.json(context.Background(), "GET", "/test", nil, true, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "Rate limited; retrying") {
+		t.Fatalf("missing retry progress: %q", log.String())
 	}
 }
 

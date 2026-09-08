@@ -75,6 +75,7 @@ func (c *client) uploadPDF(ctx context.Context, filename string) (directUpload, 
 	if err != nil {
 		return directUpload{}, failure("protocol", "Could not build the storage upload request.")
 	}
+	request.ContentLength = info.Size()
 	for name, value := range upload.Upload.Headers {
 		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Cookie") || strings.EqualFold(name, "Host") {
 			return directUpload{}, failure("protocol", "Server returned an unsafe upload header.")

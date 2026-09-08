@@ -79,7 +79,7 @@ var help = func() string {
 JSON is the default output. Resource list retrieves up to 10,000 records and accepts --query.
 Examples retrieves up to 10,000 records; --limit controls the page size.
 Import accepts a JSON array, validates every batch, and returns confirmation tokens.
-Use command list to discover resource types, actions and input schemas.
+Use command list to discover every command; --limit optionally caps the result at 250.
 IDs are tenant-scoped. PDFs require --output; files are never overwritten.
 PDF upload returns a signed attachment identifier for a document command.
 Login shows a URL and code for browser approval. It does not open a browser.
@@ -296,7 +296,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			fmt.Fprint(stdout, help)
 			return nil
 		}
-		return failure("usage", "Invalid options. Run valiido --help.")
+		return failure("usage", fmt.Sprintf("Invalid options. Usage: %s", commandUsage(command)))
 	}
 	limitProvided := false
 	commandInputProvided := false
@@ -304,8 +304,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		limitProvided = limitProvided || option.Name == "limit"
 		commandInputProvided = commandInputProvided || option.Name == "input"
 	})
-	if flags.NArg() != 0 || (text && (output != "" || *jsonOutput)) || (command == "resources pdf" && output == "") {
-		return failure("usage", "Unexpected arguments or incompatible output options.")
+	if flags.NArg() != 0 {
+		return failure("usage", fmt.Sprintf("Unexpected positional arguments. Usage: %s", commandUsage(command)))
+	}
+	if text && output != "" {
+		return failure("usage", "Use either --text or --output, not both.")
+	}
+	if text && *jsonOutput {
+		return failure("usage", "Use either --text or --json, not both.")
+	}
+	if command == "resources pdf" && output == "" {
+		return failure("usage", "--output is required for resource pdf.")
 	}
 	if command == "resources examples" && (limit < 1 || limit > 50) {
 		return failure("usage", "--limit must be between 1 and 50.")
@@ -408,21 +417,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return success(stdout, map[string]bool{"revoked": true})
 	}
 	if value.ExpiresAt.Before(time.Now().Add(30 * time.Second)) {
-		var tokens tokenResponse
-		err := c.json(ctx, "POST", apiPaths["oauth#token"], url.Values{"client_id": {clientID}, "grant_type": {"refresh_token"}, "refresh_token": {value.RefreshToken}}, false, true, &tokens)
+		value, err = refreshSessionTokens(ctx, s, value)
 		if err != nil {
-			return err // Never blindly retry refresh token rotation.
-		}
-		if err := validateToken(tokens, value.Scope); err != nil {
 			return err
 		}
-		applyTokens(&value, tokens)
-		if err := s.save(value); err != nil {
-			_ = revoke(ctx, c, tokens.RefreshToken)
-			return err
-		}
-		c.token = tokens.AccessToken
+		c.token = value.AccessToken
 	}
+	c.retryLog = stderr
 	me, err := c.me(ctx)
 	if err != nil {
 		return err
@@ -442,6 +443,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Access tokens can be used concurrently. Release the profile before the
 	// actual command while keeping load, refresh rotation and saving serialized.
 	unlock()
+	c.expiresAt = value.ExpiresAt
+	c.refresh = func(refreshContext context.Context, staleAccessToken string) (string, time.Time, error) {
+		refreshed, refreshErr := refreshStoredSession(refreshContext, *profile, fileCredentials, staleAccessToken)
+		if refreshErr != nil {
+			return "", time.Time{}, refreshErr
+		}
+		return refreshed.AccessToken, refreshed.ExpiresAt, nil
+	}
 	switch command {
 	case "auth status":
 		return success(stdout, me)
@@ -557,6 +566,46 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return success(stdout, schema)
 	}
 	return nil
+}
+
+func refreshStoredSession(ctx context.Context, profile string, fileCredentials bool, staleAccessToken string) (session, error) {
+	s, unlock, err := openStore(profile, fileCredentials)
+	if err != nil {
+		return session{}, err
+	}
+	defer unlock()
+
+	value, err := s.load()
+	if err != nil {
+		return session{}, err
+	}
+	if value.AccessToken != staleAccessToken && value.ExpiresAt.After(time.Now().Add(time.Minute)) {
+		return value, nil
+	}
+
+	return refreshSessionTokens(ctx, s, value)
+}
+
+func refreshSessionTokens(ctx context.Context, s *store, value session) (session, error) {
+	c, err := newClient(value.Server, "")
+	if err != nil {
+		return session{}, err
+	}
+	var tokens tokenResponse
+	if err := c.json(ctx, "POST", apiPaths["oauth#token"], url.Values{
+		"client_id": {clientID}, "grant_type": {"refresh_token"}, "refresh_token": {value.RefreshToken},
+	}, false, true, &tokens); err != nil {
+		return session{}, err
+	}
+	if err := validateToken(tokens, value.Scope); err != nil {
+		return session{}, err
+	}
+	applyTokens(&value, tokens)
+	if err := s.save(value); err != nil {
+		_ = revoke(ctx, c, tokens.RefreshToken)
+		return session{}, err
+	}
+	return value, nil
 }
 
 func rejectDuplicateFlags(args []string, flags *flag.FlagSet) error {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 )
@@ -112,12 +114,27 @@ func readImportBatches(path string) ([][]byte, int, error) {
 func (c *client) importResources(ctx context.Context, resourceType string, batches [][]byte, dryRun bool) ([]importBatchResult, error) {
 	name := resourceType + ".bulk_create"
 	validated := make([]commandResult, 0, len(batches))
-	for _, batch := range batches {
+	validationErrors := make([]any, 0)
+	rowOffset := 0
+	for batchIndex, batch := range batches {
 		result, err := c.runCommand(ctx, name, string(batch), true)
 		if err != nil {
-			return nil, err
+			var apiErr *apiError
+			if !errors.As(err, &apiErr) || (apiErr.Code != "validation_failed" && apiErr.Code != "invalid_input" && apiErr.Code != "unsupported_resource_attributes") {
+				return nil, err
+			}
+			validationErrors = append(validationErrors, importValidationDetails(apiErr, batchIndex, rowOffset)...)
+			rowOffset += importBatchItemCount(batch)
+			continue
 		}
 		validated = append(validated, result)
+		rowOffset += importBatchItemCount(batch)
+	}
+	if len(validationErrors) > 0 {
+		return nil, &apiError{
+			Code: "validation_failed", Message: fmt.Sprintf("%d import rows could not be validated.", len(validationErrors)),
+			Details: map[string]any{"errors": validationErrors},
+		}
 	}
 	if dryRun {
 		return compactImportResults(validated, batches, false)
@@ -137,6 +154,42 @@ func (c *client) importResources(ctx context.Context, resourceType string, batch
 		prepared = append(prepared, result)
 	}
 	return compactImportResults(prepared, batches, true)
+}
+
+func importValidationDetails(apiErr *apiError, batchIndex, rowOffset int) []any {
+	if apiErr.Details != nil {
+		if rows, ok := apiErr.Details["errors"].([]any); ok && len(rows) > 0 {
+			adjusted := make([]any, 0, len(rows))
+			for _, row := range rows {
+				fields, ok := row.(map[string]any)
+				if !ok {
+					continue
+				}
+				copy := make(map[string]any, len(fields))
+				for key, value := range fields {
+					copy[key] = value
+				}
+				if index, ok := copy["index"].(float64); ok {
+					copy["index"] = int(index) + rowOffset
+				}
+				adjusted = append(adjusted, copy)
+			}
+			if len(adjusted) > 0 {
+				return adjusted
+			}
+		}
+	}
+	return []any{map[string]any{"batch": batchIndex + 1, "message": apiErr.Message}}
+}
+
+func importBatchItemCount(batch []byte) int {
+	var payload struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if json.Unmarshal(batch, &payload) != nil {
+		return 0
+	}
+	return len(payload.Items)
 }
 
 func compactImportResults(results []commandResult, batches [][]byte, prepared bool) ([]importBatchResult, error) {

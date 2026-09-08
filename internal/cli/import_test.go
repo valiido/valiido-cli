@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -99,6 +100,40 @@ func TestImportValidatesEveryBatchBeforePreparing(t *testing.T) {
 		results[0].Count != 1 || results[0].Index != 1 || results[0].ConfirmationToken != "token-1" ||
 		results[0].ConfirmationExpiresIn != 600 || results[0].Command != "assets.bulk_create" || results[0].Risk != "write" {
 		t.Fatalf("import output was not compact or lost confirmation data: %s", encoded)
+	}
+}
+
+func TestImportCollectsValidationErrorsAcrossEveryBatch(t *testing.T) {
+	dryRuns := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil || r.Form.Get("dry_run") != "true" {
+			t.Fatal("import prepared data before every batch was valid")
+		}
+		dryRuns++
+		index := 2
+		if dryRuns == 2 {
+			index = 1
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"code": "validation_failed", "message": "Invalid row."},
+			"data":  map[string]any{"errors": []any{map[string]any{"index": index, "message": "Invalid value."}}},
+		})
+	}))
+	defer server.Close()
+	c, _ := newClient(server.URL, "secret")
+	batches := [][]byte{
+		[]byte(`{"items":[{"asset_name":"One"},{"asset_name":"Two"}]}`),
+		[]byte(`{"items":[{"asset_name":"Three"}]}`),
+	}
+	_, err := c.importResources(context.Background(), "assets", batches, false)
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || dryRuns != 2 {
+		t.Fatalf("did not collect every batch: dry=%d err=%#v", dryRuns, err)
+	}
+	rows, ok := apiErr.Details["errors"].([]any)
+	if !ok || len(rows) != 2 || rows[0].(map[string]any)["index"] != 2 || rows[1].(map[string]any)["index"] != 3 {
+		t.Fatalf("wrong global row indexes: %#v", apiErr.Details)
 	}
 }
 

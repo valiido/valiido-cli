@@ -37,7 +37,7 @@ func TestPDFUploadUsesAuthenticatedAPIAndStorage(t *testing.T) {
 			})
 		case "/storage":
 			body, _ := io.ReadAll(r.Body)
-			if r.Method != http.MethodPut || string(body) != string(pdf) {
+			if r.Method != http.MethodPut || r.ContentLength != int64(len(pdf)) || string(body) != string(pdf) {
 				t.Fatal("storage did not receive the PDF")
 			}
 			w.WriteHeader(http.StatusNoContent)

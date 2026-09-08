@@ -38,13 +38,14 @@ var (
 )
 
 type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 func (e *apiError) Error() string { return e.Message }
 
-func failure(code, message string) error { return &apiError{code, message} }
+func failure(code, message string) error { return &apiError{Code: code, Message: message} }
 
 type identity struct {
 	TenantNumber string `json:"tenant_number"`
@@ -64,13 +65,12 @@ type document struct {
 }
 
 type resource struct {
-	Type              string         `json:"type"`
-	ID                int64          `json:"id"`
-	Version           *int64         `json:"version"`
-	Label             string         `json:"label"`
-	Attributes        map[string]any `json:"attributes"`
-	DisplayAttributes map[string]any `json:"display_attributes,omitempty"`
-	URL               string         `json:"url,omitempty"`
+	Type       string         `json:"type"`
+	ID         int64          `json:"id"`
+	Version    *int64         `json:"version"`
+	Label      string         `json:"label"`
+	Attributes map[string]any `json:"attributes"`
+	URL        string         `json:"url,omitempty"`
 }
 
 type resourcePage struct {
@@ -81,11 +81,10 @@ type resourcePage struct {
 }
 
 type example struct {
-	ExampleID         int64          `json:"example_id"`
-	Label             string         `json:"label"`
-	Copied            bool           `json:"copied"`
-	Attributes        map[string]any `json:"attributes"`
-	DisplayAttributes map[string]any `json:"display_attributes,omitempty"`
+	ExampleID  int64          `json:"example_id"`
+	Label      string         `json:"label"`
+	Copied     bool           `json:"copied"`
+	Attributes map[string]any `json:"attributes"`
 }
 
 type examplePage struct {
@@ -126,9 +125,12 @@ type deviceResponse struct {
 }
 
 type client struct {
-	base  string
-	token string
-	http  *http.Client
+	base      string
+	token     string
+	expiresAt time.Time
+	refresh   func(context.Context, string) (string, time.Time, error)
+	retryLog  io.Writer
+	http      *http.Client
 }
 
 func newClient(server, token string) (*client, error) {
@@ -168,7 +170,13 @@ func (c *client) request(ctx context.Context, method, path string, form url.Valu
 	if authenticated && c.token == "" {
 		return nil, failure("auth", "Run valiido auth login first.")
 	}
+	authRetried := false
 	for attempt := 0; ; attempt++ {
+		if authenticated && !c.expiresAt.IsZero() && c.expiresAt.Before(time.Now().Add(time.Minute)) {
+			if err := c.refreshAccess(ctx); err != nil {
+				return nil, err
+			}
+		}
 		// Rebuild the request each attempt; the form body reader is consumed by Do.
 		var body io.Reader
 		if form != nil {
@@ -194,6 +202,15 @@ func (c *client) request(ctx context.Context, method, path string, form url.Valu
 			// The original error can include URLs or server-controlled content.
 			return nil, failure("network", "Could not reach the Valiido server.")
 		}
+		if authenticated && resp.StatusCode == http.StatusUnauthorized && !authRetried && c.refresh != nil {
+			resp.Body.Close()
+			if err := c.refreshAccess(ctx); err != nil {
+				return nil, err
+			}
+			authRetried = true
+			attempt--
+			continue
+		}
 		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
 			return resp, nil
 		}
@@ -201,6 +218,9 @@ func (c *client) request(ctx context.Context, method, path string, form url.Valu
 		// processed, so retrying (including writes) is safe. Wait, then retry.
 		delay := retryAfterDelay(resp, attempt)
 		resp.Body.Close()
+		if c.retryLog != nil {
+			fmt.Fprintf(c.retryLog, "Rate limited; retrying in %s (attempt %d/%d).\n", delay, attempt+1, maxRateLimitRetries)
+		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -209,6 +229,19 @@ func (c *client) request(ctx context.Context, method, path string, form url.Valu
 		case <-timer.C:
 		}
 	}
+}
+
+func (c *client) refreshAccess(ctx context.Context) error {
+	if c.refresh == nil {
+		return failure("auth", "Authentication expired. Run valiido auth login again.")
+	}
+	token, expiresAt, err := c.refresh(ctx, c.token)
+	if err != nil {
+		return err
+	}
+	c.token = token
+	c.expiresAt = expiresAt
+	return nil
 }
 
 // retryAfterDelay honours a numeric Retry-After header when present, otherwise
@@ -269,10 +302,12 @@ func (c *client) json(ctx context.Context, method, path string, form url.Values,
 
 func responseError(status int, data []byte) error {
 	var payload struct {
-		Error *apiError `json:"error"`
+		Error *apiError      `json:"error"`
+		Data  map[string]any `json:"data"`
 	}
 	if json.Unmarshal(data, &payload) == nil && payload.Error != nil &&
 		payload.Error.Code != "" && payload.Error.Message != "" {
+		payload.Error.Details = payload.Data
 		return payload.Error
 	}
 	switch status {
