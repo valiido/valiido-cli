@@ -215,8 +215,8 @@ func validAgentScope(scope string) bool {
 }
 
 func (c *client) resources(ctx context.Context, kind string) ([]resource, error) {
-	if kind != "documents" && kind != "tasks" && kind != "risks" {
-		return nil, failure("usage", "Unsupported resource type.")
+	if strings.TrimSpace(kind) == "" {
+		return nil, failure("usage", "Resource type is required.")
 	}
 	all := make([]resource, 0)
 	cursor := ""
@@ -257,8 +257,8 @@ func (c *client) resources(ctx context.Context, kind string) ([]resource, error)
 }
 
 func (c *client) readResource(ctx context.Context, kind string, id int64) (resource, error) {
-	if kind != "documents" && kind != "tasks" && kind != "risks" {
-		return resource{}, failure("usage", "Unsupported resource type.")
+	if strings.TrimSpace(kind) == "" {
+		return resource{}, failure("usage", "Resource type is required.")
 	}
 	var item resource
 	result, err := c.runCommand(ctx, kind+".show", fmt.Sprintf(`{"id":%d}`, id), false)
@@ -275,7 +275,7 @@ func (c *client) readResource(ctx context.Context, kind string, id int64) (resou
 }
 
 func validateResource(item resource, kind string) error {
-	if item.ID <= 0 || item.Type != kind || item.Label == "" || item.Attributes == nil {
+	if item.ID <= 0 || item.Type != kind || item.Attributes == nil {
 		return failure("protocol", "API returned an invalid resource.")
 	}
 	return nil

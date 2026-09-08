@@ -15,7 +15,7 @@ func TestInstallSkill(t *testing.T) {
 		t.Run(directory, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), directory, "skills", "valiido", "SKILL.md")
 			for range 2 {
-				if err := installSkill(path); err != nil {
+				if err := installSkill(path, false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -26,12 +26,19 @@ func TestInstallSkill(t *testing.T) {
 			if err := os.WriteFile(path, []byte("custom skill"), 0644); err != nil {
 				t.Fatal(err)
 			}
-			if err := installSkill(path); err == nil {
+			if err := installSkill(path, false); err == nil {
 				t.Fatal("must reject an existing different skill")
 			}
 			content, err = os.ReadFile(path)
 			if err != nil || string(content) != "custom skill" {
 				t.Fatal("existing skill was modified")
+			}
+			if err := installSkill(path, true); err != nil {
+				t.Fatal(err)
+			}
+			content, err = os.ReadFile(path)
+			if err != nil || string(content) != skills.Valiido {
+				t.Fatal("force did not install the bundled skill")
 			}
 		})
 	}

@@ -15,6 +15,7 @@ func setup(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	agent := flags.String("agent", "all", "Install for codex, claude or all")
+	force := flags.Bool("force", false, "Replace an existing Valiido skill")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			_, err = fmt.Fprint(stdout, help)
@@ -23,7 +24,7 @@ func setup(args []string, stdout io.Writer) error {
 		return failure("usage", "Invalid setup options. Run valiido --help.")
 	}
 	if flags.NArg() != 0 || (*agent != "all" && *agent != "codex" && *agent != "claude") {
-		return failure("usage", "Use valiido setup [--agent codex|claude|all].")
+		return failure("usage", "Use valiido setup [--agent codex|claude|all] [--force].")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -35,7 +36,7 @@ func setup(args []string, stdout io.Writer) error {
 			continue
 		}
 		path := filepath.Join(home, target.directory, "skills", "valiido", "SKILL.md")
-		if err := installSkill(path); err != nil {
+		if err := installSkill(path, *force); err != nil {
 			return err
 		}
 		installed = append(installed, path)
@@ -43,7 +44,7 @@ func setup(args []string, stdout io.Writer) error {
 	return success(stdout, map[string]any{"skills": installed})
 }
 
-func installSkill(path string) error {
+func installSkill(path string, force bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return failure("storage", "Cannot create the Valiido skill directory.")
 	}
@@ -52,6 +53,13 @@ func installSkill(path string) error {
 		content, readErr := os.ReadFile(path)
 		if readErr == nil && string(content) == skills.Valiido {
 			return nil
+		}
+		if force {
+			info, statErr := os.Lstat(path)
+			if statErr != nil || !info.Mode().IsRegular() || os.Remove(path) != nil {
+				return failure("storage", "Cannot safely replace the existing Valiido skill.")
+			}
+			return installSkill(path, false)
 		}
 		return failure("storage", "A different Valiido skill already exists. Move it aside before running setup again.")
 	}

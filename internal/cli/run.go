@@ -17,16 +17,13 @@ import (
 
 const help = `Valiido CLI — ISMS access for people and agents
 
-  valiido setup [--agent codex|claude|all]
+  valiido setup [--agent codex|claude|all] [--force]
   valiido auth login [--profile NAME] [--server URL] [--file-credentials]
   valiido auth status [--profile NAME]
   valiido auth logout [--profile NAME]
-  valiido document list [--profile NAME] [--json]
-  valiido document read ID [--text | --output FILE.pdf] [--profile NAME]
-  valiido task list [--profile NAME] [--json]
-  valiido task read ID [--profile NAME] [--json]
-  valiido risk list [--profile NAME] [--json]
-  valiido risk read ID [--profile NAME] [--json]
+  valiido resource list TYPE [--profile NAME] [--json]
+  valiido resource read TYPE ID [--profile NAME] [--json]
+  valiido resource examples TYPE [--query TEXT] [--limit N] [--profile NAME] [--json]
   valiido resource pdf TYPE ID --output FILE.pdf [--profile NAME]
   valiido command list [--profile NAME] [--json]
   valiido command run NAME [--input JSON] [--dry-run] [--profile NAME]
@@ -34,7 +31,8 @@ const help = `Valiido CLI — ISMS access for people and agents
   valiido command reject TOKEN [--profile NAME]
   valiido api schema [--profile NAME]
 
-JSON is the default output. List retrieves every page, including folders.
+JSON is the default output. Resource list retrieves every page.
+Use command list to discover resource types, actions and input schemas.
 IDs are tenant-scoped. PDFs require --output; files are never overwritten.
 Login shows a URL and code for browser approval. It does not open a browser.
 Use --server http://127.0.0.1:3000 for local development.
@@ -98,6 +96,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		rest = rest[1:]
 	}
+	if command == "resources list" || command == "resources examples" {
+		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
+			return failure("usage", "Expected a resource type before options.")
+		}
+		resourceType, rest = rest[0], rest[1:]
+	}
+	if command == "resources read" {
+		if len(rest) < 2 || strings.TrimSpace(rest[0]) == "" {
+			return failure("usage", "Expected a resource type and positive resource ID before options.")
+		}
+		resourceType = rest[0]
+		var err error
+		id, err = strconv.ParseInt(rest[1], 10, 64)
+		if err != nil || id <= 0 {
+			return failure("usage", "Resource ID must be a positive integer.")
+		}
+		rest = rest[2:]
+	}
 	if command == "resources pdf" {
 		if len(rest) < 2 || strings.TrimSpace(rest[0]) == "" {
 			return failure("usage", "Expected a resource type and positive resource ID before options.")
@@ -127,7 +143,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(io.Discard)
 	profile := flags.String("profile", "default", "Credential profile")
 	jsonOutput := flags.Bool("json", false, "JSON output (default)")
-	var server, output, commandInput string
+	var server, output, commandInput, query string
+	var limit int
 	var fileCredentials, text, dryRun bool
 	switch command {
 	case "auth login":
@@ -138,10 +155,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.StringVar(&output, "output", "", "PDF output filename")
 	case "resources pdf":
 		flags.StringVar(&output, "output", "", "PDF output filename")
+	case "resources examples":
+		flags.StringVar(&query, "query", "", "Search example names and content")
+		flags.IntVar(&limit, "limit", 20, "Maximum number of examples (1-50)")
 	case "commands run":
 		flags.StringVar(&commandInput, "input", "{}", "Command input as a JSON object")
 		flags.BoolVar(&dryRun, "dry-run", false, "Validate and preview without changing data")
-	case "auth status", "auth logout", "documents list", "tasks list", "tasks read", "risks list", "risks read", "commands list", "commands confirm", "commands reject", "api schema":
+	case "auth status", "auth logout", "documents list", "tasks list", "tasks read", "risks list", "risks read", "resources list", "resources read", "commands list", "commands confirm", "commands reject", "api schema":
 	default:
 		return failure("usage", "Unknown command. Run valiido --help.")
 	}
@@ -154,6 +174,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if flags.NArg() != 0 || (text && (output != "" || *jsonOutput)) || (command == "resources pdf" && output == "") {
 		return failure("usage", "Unexpected arguments or incompatible output options.")
+	}
+	if command == "resources examples" && (limit < 1 || limit > 50) {
+		return failure("usage", "--limit must be between 1 and 50.")
 	}
 	s, unlock, err := openStore(*profile, fileCredentials)
 	if err != nil {
@@ -289,6 +312,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		return success(stdout, item)
+	case "resources list":
+		items, err := c.resources(ctx, resourceType)
+		if err != nil {
+			return err
+		}
+		return success(stdout, map[string]any{"type": resourceType, "resources": items, "count": len(items), "complete": true})
+	case "resources read":
+		item, err := c.readResource(ctx, resourceType, id)
+		if err != nil {
+			return err
+		}
+		return success(stdout, item)
+	case "resources examples":
+		input, err := json.Marshal(map[string]any{"query": query, "limit": limit})
+		if err != nil {
+			return failure("usage", "Could not encode example search options.")
+		}
+		result, err := c.runCommand(ctx, resourceType+".list_examples", string(input), false)
+		if err != nil {
+			return err
+		}
+		return success(stdout, result.Data)
 	case "resources pdf":
 		if err := c.download(ctx, resourceType, id, output); err != nil {
 			return err
@@ -379,8 +424,8 @@ func (c *client) download(ctx context.Context, resourceType string, id int64, ou
 	}
 	ok := false
 	defer func() {
-		_ = f.Close()
 		if !ok {
+			_ = f.Close()
 			_ = os.Remove(output)
 		}
 	}()
