@@ -345,7 +345,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			}
 		}
 		if len(commandInput) > maxCommandInput {
-			return failure("usage", "Command input cannot exceed 64 KiB.")
+			return failure("usage", "Command input cannot exceed 1 MiB.")
 		}
 		inputOption := "--input"
 		if commandInputFile != "" {

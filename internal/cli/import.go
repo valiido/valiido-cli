@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	maxCommandInput  = 64 << 10
+	maxCommandInput  = 1 << 20
 	maxImportFile    = 16 << 20
 	maxImportItems   = 5000
 	maxImportBatches = 50
@@ -37,7 +37,7 @@ func readCommandInputFile(path string) (string, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxCommandInput+1))
 	if err != nil || len(data) > maxCommandInput {
-		return "", failure("usage", "Command input file could not be read or exceeds 64 KiB.")
+		return "", failure("usage", "Command input file could not be read or exceeds 1 MiB.")
 	}
 	return string(data), nil
 }
@@ -98,14 +98,14 @@ func readImportBatches(path string) ([][]byte, int, error) {
 			continue
 		}
 		if len(current) == 0 {
-			return nil, 0, failure("usage", "One imported resource exceeds the 64 KiB command limit.")
+			return nil, 0, failure("usage", "One imported resource exceeds the 1 MiB command limit.")
 		}
 		batch, _ := json.Marshal(map[string]any{"items": current})
 		batches = append(batches, batch)
 		current = []map[string]any{item}
 		encoded, _ = json.Marshal(map[string]any{"items": current})
 		if len(encoded) > maxCommandInput {
-			return nil, 0, failure("usage", "One imported resource exceeds the 64 KiB command limit.")
+			return nil, 0, failure("usage", "One imported resource exceeds the 1 MiB command limit.")
 		}
 	}
 	if len(current) > 0 {
