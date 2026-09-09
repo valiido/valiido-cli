@@ -79,11 +79,12 @@ var help = func() string {
 JSON is the default output. Resource list retrieves up to 10,000 records and accepts --query.
 Examples retrieves up to 10,000 records; --limit controls the page size.
 Import accepts a JSON array, validates every batch, and returns confirmation tokens.
-Use command list to discover every command; --limit optionally caps the result at 250.
+Use command list to discover every command; --limit optionally caps the result at 1,000.
 IDs are tenant-scoped. PDFs require --output; files are never overwritten.
 PDF upload returns a signed attachment identifier for a document command.
 Login shows a URL and code for browser approval. It does not open a browser.
-Use --server http://127.0.0.1:3000 for local development.
+Use --server http://127.0.0.1:3000 with auth login for local development.
+Import error indexes are 1-based.
 `
 }()
 
@@ -96,7 +97,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, contextual)
 		return 0
 	}
-	if len(args) == 1 && args[0] == "--version" {
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
 		fmt.Fprintln(stdout, "valiido "+version)
 		return 0
 	}
@@ -168,6 +169,9 @@ func contextualHelp(args []string) (string, bool) {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	args = append([]string(nil), args...)
+	if strings.HasPrefix(args[0], "-") {
+		return failure("usage", "Options must follow a command. Run valiido --help.")
+	}
 	args[0] = canonicalNoun(args[0])
 
 	if args[0] == "setup" {
@@ -205,13 +209,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
 			return failure("usage", "Expected a resource type before options.")
 		}
-		resourceType, rest = rest[0], rest[1:]
+		resourceType, rest = strings.ToLower(rest[0]), rest[1:]
 	}
 	if command == "resources read" {
 		if len(rest) < 2 || strings.TrimSpace(rest[0]) == "" {
 			return failure("usage", "Expected a resource type and positive resource ID before options.")
 		}
-		resourceType = rest[0]
+		resourceType = strings.ToLower(rest[0])
 		var err error
 		id, err = parseResourceID(rest[1])
 		if err != nil {
@@ -223,7 +227,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if len(rest) < 2 || strings.TrimSpace(rest[0]) == "" {
 			return failure("usage", "Expected a resource type and positive resource ID before options.")
 		}
-		resourceType = rest[0]
+		resourceType = strings.ToLower(rest[0])
 		var err error
 		id, err = parseResourceID(rest[1])
 		if err != nil {
@@ -271,7 +275,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.StringVar(&output, "output", "", "PDF output filename")
 	case "resources examples":
 		flags.StringVar(&query, "query", "", "Search example names and content")
-		flags.IntVar(&limit, "limit", 50, "Examples per page (1-50); every page is retrieved")
+		flags.IntVar(&limit, "limit", pageSize, "Examples per page (1-250); every page is retrieved")
 	case "resources list":
 		flags.StringVar(&query, "query", "", "Search resource fields")
 	case "resources import":
@@ -279,7 +283,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.BoolVar(&dryRun, "dry-run", false, "Validate without preparing changes")
 	case "commands list":
 		flags.StringVar(&query, "query", "", "Search command names and descriptions")
-		flags.IntVar(&limit, "limit", 0, "Maximum number of commands (1-250)")
+		flags.IntVar(&limit, "limit", 0, "Maximum number of commands (1-1000)")
 	case "commands run":
 		flags.StringVar(&commandInput, "input", "{}", "Command input as a JSON object")
 		flags.StringVar(&commandInputFile, "input-file", "", "Read command input from a JSON file")
@@ -316,11 +320,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if command == "resources pdf" && output == "" {
 		return failure("usage", "--output is required for resource pdf.")
 	}
-	if command == "resources examples" && (limit < 1 || limit > 50) {
-		return failure("usage", "--limit must be between 1 and 50.")
-	}
-	if command == "commands list" && limitProvided && (limit < 1 || limit > 250) {
+	if command == "resources examples" && (limit < 1 || limit > pageSize) {
 		return failure("usage", "--limit must be between 1 and 250.")
+	}
+	if command == "commands list" && limitProvided && (limit < 1 || limit > 1000) {
+		return failure("usage", "--limit must be between 1 and 1000.")
 	}
 	if len(query) > 1024 {
 		return failure("usage", "--query cannot exceed 1024 bytes.")
@@ -343,14 +347,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if len(commandInput) > maxCommandInput {
 			return failure("usage", "Command input cannot exceed 64 KiB.")
 		}
+		inputOption := "--input"
+		if commandInputFile != "" {
+			inputOption = "--input-file"
+		}
 		var value any
 		if err := json.Unmarshal([]byte(commandInput), &value); err != nil {
-			return failure("usage", "--input must contain valid JSON.")
+			return failure("usage", inputOption+" must contain valid JSON.")
 		}
 		var ok bool
 		parsedCommandInput, ok = value.(map[string]any)
 		if !ok || parsedCommandInput == nil {
-			return failure("usage", "--input must be a JSON object.")
+			return failure("usage", inputOption+" must be a JSON object.")
 		}
 	}
 	var importBatches [][]byte
@@ -459,7 +467,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return success(stdout, map[string]any{"documents": documents, "count": len(documents), "complete": true})
+		return success(stdout, map[string]any{"type": "documents", "resources": documents, "count": len(documents), "complete": true})
 	case "documents read":
 		d, err := c.read(ctx, id)
 		if err != nil {
@@ -499,7 +507,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return success(stdout, map[string]any{kind: items, "count": len(items), "complete": true})
+		return success(stdout, map[string]any{"type": kind, "resources": items, "count": len(items), "complete": true})
 	case "tasks read", "risks read":
 		kind := strings.Fields(command)[0]
 		item, err := c.readResource(ctx, kind, id)
@@ -550,14 +558,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return success(stdout, result)
+		return commandSuccess(stdout, result)
 	case "commands confirm", "commands reject":
 		action := strings.Fields(command)[1]
 		result, err := c.resolveCommand(ctx, action, confirmationToken)
 		if err != nil {
 			return err
 		}
-		return success(stdout, result)
+		return commandSuccess(stdout, result)
 	case "api schema":
 		var schema map[string]any
 		if err := c.json(ctx, "GET", apiPaths["api/documentation#show"], nil, true, false, &schema); err != nil {
@@ -675,6 +683,10 @@ func revoke(ctx context.Context, c *client, token string) error {
 
 func success(out io.Writer, data any) error {
 	return json.NewEncoder(out).Encode(map[string]any{"ok": true, "data": data})
+}
+
+func commandSuccess(out io.Writer, result commandResult) error {
+	return json.NewEncoder(out).Encode(result)
 }
 
 func (c *client) download(ctx context.Context, resourceType string, id int64, output string) error {

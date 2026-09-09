@@ -144,7 +144,7 @@ func TestCommandCatalogFiltersAreEncoded(t *testing.T) {
 		if r.URL.Path != "/api/v1/commands" || r.URL.Query().Get("query") != "asset create" || r.URL.Query().Get("limit") != "7" {
 			t.Fatalf("unexpected catalog request: %s", r.URL.String())
 		}
-		json.NewEncoder(w).Encode(commandCatalog{Commands: []map[string]any{}})
+		json.NewEncoder(w).Encode(commandCatalog{Commands: []map[string]any{}, Complete: true})
 	}))
 	defer server.Close()
 	c, _ := newClient(server.URL, "secret")
@@ -157,7 +157,7 @@ func TestSearchOptionLimitsFailBeforeReadingCredentials(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"command", "list", "--limit", "0"},
-		{"command", "list", "--limit", "251"},
+		{"command", "list", "--limit", "1001"},
 		{"resource", "list", "assets", "--query", strings.Repeat("x", 1025)},
 	} {
 		var out bytes.Buffer

@@ -23,7 +23,7 @@ const legacyReadScope = "documents:read tasks:read risks:read"
 const legacyFullScope = "documents:read documents:write tasks:read tasks:write risks:read risks:write"
 const (
 	maxJSON           = 16 << 20
-	pageSize          = 50
+	pageSize          = 250
 	maxListItems      = 10000
 	maxCursorBytes    = 4096
 	maxTokenBytes     = 512
@@ -95,7 +95,10 @@ type examplePage struct {
 }
 
 type commandCatalog struct {
-	Commands []map[string]any `json:"commands"`
+	Commands   []map[string]any `json:"commands"`
+	Count      int              `json:"count"`
+	TotalCount int              `json:"total_count"`
+	Complete   bool             `json:"complete"`
 }
 
 type commandResult struct {
@@ -340,7 +343,7 @@ func (c *client) examples(ctx context.Context, kind, query string, limit int) (e
 		input, _ := json.Marshal(map[string]any{"query": query, "limit": limit, "cursor": cursor})
 		result, err := c.runCommand(ctx, kind+".list_examples", string(input), false)
 		if err != nil {
-			return examplePage{}, err
+			return examplePage{}, resourceCommandError(kind, err)
 		}
 		var page examplePage
 		if err := decodeCommandData(result, &page); err != nil {
@@ -396,7 +399,7 @@ func (c *client) resources(ctx context.Context, kind, query string) ([]resource,
 		var page resourcePage
 		result, err := c.runCommand(ctx, kind+".list", string(input), false)
 		if err != nil {
-			return nil, err
+			return nil, resourceCommandError(kind, err)
 		}
 		if err := decodeCommandData(result, &page); err != nil {
 			return nil, err
@@ -434,6 +437,7 @@ func (c *client) readResource(ctx context.Context, kind string, id int64) (resou
 	}
 	var item resource
 	result, err := c.runCommand(ctx, kind+".show", fmt.Sprintf(`{"id":%d}`, id), false)
+	err = resourceCommandError(kind, err)
 	if err == nil {
 		err = decodeCommandData(result, &item)
 	}
@@ -467,10 +471,21 @@ func (c *client) commands(ctx context.Context, query string, limit int) (command
 		path += "?" + params.Encode()
 	}
 	err := c.json(ctx, "GET", path, nil, true, false, &catalog)
-	if err == nil && catalog.Commands == nil {
+	if err == nil && (catalog.Commands == nil || catalog.Count != len(catalog.Commands) || catalog.TotalCount < catalog.Count || catalog.Complete != (catalog.Count == catalog.TotalCount)) {
 		err = failure("protocol", "Command catalog is missing from API response.")
 	}
 	return catalog, err
+}
+
+func resourceCommandError(kind string, err error) error {
+	if err == nil || strings.HasSuffix(kind, "s") {
+		return err
+	}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.Code == "unknown_command" {
+		return failure(apiErr.Code, apiErr.Message+" Resource types are plural; try "+kind+"s.")
+	}
+	return err
 }
 
 func (c *client) runCommand(ctx context.Context, name, input string, dryRun bool) (commandResult, error) {

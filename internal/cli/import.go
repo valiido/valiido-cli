@@ -21,7 +21,14 @@ const (
 func readCommandInputFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", failure("usage", "Could not open the command input file.")
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return "", failure("usage", "Command input file does not exist.")
+		case errors.Is(err, os.ErrPermission):
+			return "", failure("usage", "Permission denied while opening the command input file.")
+		default:
+			return "", failure("usage", "Could not open the command input file.")
+		}
 	}
 	defer f.Close()
 	info, err := f.Stat()
