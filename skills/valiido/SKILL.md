@@ -20,8 +20,9 @@ request and preserve the language of existing content unless asked to translate.
   actions. Put customer or multiline input in a mode-0600 JSON file and pass
   `--input-file FILE.json` so its contents do not appear in the process list.
 - Export records with `valiido resource pdf TYPE ID --output FILE.pdf`. Upload a
-  local PDF with `valiido document upload FILE.pdf`; use its signed identifier
-  only in the immediately following document create or update command.
+  local file with `valiido document upload FILE`; use the returned `signed_id`
+  for a PDF document field and `attachable_sgid` for an ActionText attachment.
+  Use either identifier only in the immediately following authorized change.
 
 ## Working with ISMS data
 

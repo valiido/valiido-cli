@@ -17,6 +17,8 @@ filenames in skills, documentation, tests, fixtures, logs, or command examples.
 4. Identify duplicate source records and overlap between files before import.
    Do not infer that repeated rows are separate records merely because they
    occur in separate sheets or files.
+5. Search both active records and trash before creating anything. Restore and
+   adapt an exact prior record instead of creating a duplicate.
 
 ## Choose the correct creation path
 
@@ -32,6 +34,10 @@ filenames in skills, documentation, tests, fixtures, logs, or command examples.
 - Spreadsheet rows belong in their native resource types when their fields map
   reliably. Retain a document copy only when the source itself is a controlled
   record whose original layout or context matters.
+- Treat a table row as one native record when it has its own identity. Convert
+  subordinate tables and checklist rows to real child resources. Keep source
+  sheet and row references in the mapping so errors and verification point back
+  to the exact source.
 
 ## Preserve customer material
 
@@ -59,22 +65,40 @@ filenames in skills, documentation, tests, fixtures, logs, or command examples.
   append remaining values to one structured import comment. If comments are not
   supported, use an appropriate free-text field or report the gap. Never discard
   a value silently.
+- Put provenance and unmapped values on the resource they describe: shared
+  template context belongs on the parent; item-specific values belong on the
+  child. Do not invent an empty child merely to hold a parent-level comment.
 
 ## Execute safely
 
 - Keep customer JSON in mode-0600 files and use `--input-file`.
+- Keep an idempotent local state file that maps a stable source key to the
+  tenant-scoped record id and completed operations. On restart, read and verify
+  that record before continuing; do not identify records by similar titles.
 - For bulk imports, validate the complete JSON file with `--dry-run`, review its
   counts and representative previews, then prepare and confirm every batch.
+- A prepared write has not happened yet. When `command run` returns
+  `pending_confirmation`, review it and call `command confirm` when the user has
+  authorized that exact change. Verify the resulting resource rather than
+  treating preparation as success.
+- Use `resource import` for homogeneous new records. Use individual commands for
+  template copies, updates, relationships, attachments, parent/child resources,
+  and mixed imports whose progress must be resumed independently.
 - Read current versions immediately before dependent updates. On a conflict,
   stop and compare instead of overwriting another change.
 - Do not remove or replace existing customer records unless the request clearly
   authorizes that mutation and the source material remains available.
+- Continue with independent source groups after a record-level failure when the
+  approved plan permits it. Collect every failure and leave failed operations
+  retryable instead of reporting partial work as complete.
 
 ## Mandatory quality gate
 
 Before reporting success, verify all of the following through the CLI:
 
 - Actual counts match the source-to-target mapping.
+- Separate source records from system-generated records when reconciling counts.
+  For example, completing a recurring task can create its next occurrence.
 - No header, sample, total, blank, or duplicate rows became resources.
 - Every resource with a suitable example has the intended example reference;
   every resource without one has a documented reason.
@@ -86,6 +110,9 @@ Before reporting success, verify all of the following through the CLI:
   remaining artifacts instead of editable content.
 - Relationships, comments, enums, dates, and tenant-scoped identifiers survived
   the round trip.
+- Account for canonical system behavior when comparing results. Derived fields
+  such as risk state may legitimately differ from requested aliases; verify the
+  source values remain represented and report any material semantic change.
 - No source value was silently lost and no customer material entered a source
   repository or retained command line.
 
