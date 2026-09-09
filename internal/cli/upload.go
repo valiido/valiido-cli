@@ -14,43 +14,56 @@ import (
 	"time"
 )
 
-const maxPDFUpload = 50 << 20
+const maxFileUpload = 50 << 20
+
+var uploadContentTypes = map[string]bool{
+	"application/pdf": true,
+	"image/gif":       true,
+	"image/jpeg":      true,
+	"image/png":       true,
+	"image/webp":      true,
+}
 
 type directUpload struct {
-	SignedID    string `json:"signed_id"`
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type"`
-	ByteSize    int64  `json:"byte_size"`
-	Upload      struct {
+	SignedID       string `json:"signed_id"`
+	AttachableSGID string `json:"attachable_sgid"`
+	Filename       string `json:"filename"`
+	ContentType    string `json:"content_type"`
+	ByteSize       int64  `json:"byte_size"`
+	Upload         struct {
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
 	} `json:"direct_upload"`
 }
 
-func (c *client) uploadPDF(ctx context.Context, filename string) (directUpload, error) {
+func (c *client) uploadFile(ctx context.Context, filename string) (directUpload, error) {
 	file, err := os.Open(filename)
 	if err != nil {
-		return directUpload{}, failure("storage", "Could not open the PDF file.")
+		return directUpload{}, failure("storage", "Could not open the file.")
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() < 5 || info.Size() > maxPDFUpload {
-		return directUpload{}, failure("storage", "PDF must be a regular file between 5 bytes and 50 MiB.")
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maxFileUpload {
+		return directUpload{}, failure("storage", "Upload must be a regular file between 1 byte and 50 MiB.")
 	}
-	header := make([]byte, 5)
-	if _, err := io.ReadFull(file, header); err != nil || string(header) != "%PDF-" {
-		return directUpload{}, failure("invalid_input", "File does not have a PDF signature.")
+	header := make([]byte, min(512, int(info.Size())))
+	if _, err := io.ReadFull(file, header); err != nil {
+		return directUpload{}, failure("storage", "Could not read the file.")
+	}
+	contentType := http.DetectContentType(header)
+	if !uploadContentTypes[contentType] {
+		return directUpload{}, failure("invalid_input", "Only PDF, GIF, JPEG, PNG, and WebP files can be uploaded.")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return directUpload{}, failure("storage", "Could not read the PDF file.")
+		return directUpload{}, failure("storage", "Could not read the file.")
 	}
 	hash := md5.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return directUpload{}, failure("storage", "Could not read the PDF file.")
+		return directUpload{}, failure("storage", "Could not read the file.")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return directUpload{}, failure("storage", "Could not read the PDF file.")
+		return directUpload{}, failure("storage", "Could not read the file.")
 	}
 
 	var upload directUpload
@@ -58,12 +71,12 @@ func (c *client) uploadPDF(ctx context.Context, filename string) (directUpload, 
 		"filename":     {filepath.Base(filename)},
 		"byte_size":    {fmt.Sprint(info.Size())},
 		"checksum":     {base64.StdEncoding.EncodeToString(hash.Sum(nil))},
-		"content_type": {"application/pdf"},
+		"content_type": {contentType},
 	}
 	if err := c.json(ctx, http.MethodPost, apiPaths["api/uploads#create"], form, true, false, &upload); err != nil {
 		return directUpload{}, err
 	}
-	if upload.SignedID == "" || upload.Filename == "" || upload.ContentType != "application/pdf" || upload.ByteSize != info.Size() {
+	if upload.SignedID == "" || upload.AttachableSGID == "" || upload.Filename == "" || upload.ContentType != contentType || upload.ByteSize != info.Size() {
 		return directUpload{}, failure("protocol", "Server returned invalid upload metadata.")
 	}
 
@@ -91,11 +104,11 @@ func (c *client) uploadPDF(ctx context.Context, filename string) (directUpload, 
 	httpClient.Timeout = 5 * time.Minute
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return directUpload{}, failure("network", "Could not upload the PDF file.")
+		return directUpload{}, failure("network", "Could not upload the file.")
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return directUpload{}, failure("storage", fmt.Sprintf("PDF upload failed (HTTP %d).", response.StatusCode))
+		return directUpload{}, failure("storage", fmt.Sprintf("File upload failed (HTTP %d).", response.StatusCode))
 	}
 
 	return upload, nil

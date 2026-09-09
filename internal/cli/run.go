@@ -35,7 +35,7 @@ var commandDefinitions = []commandDefinition{
 	{"auth logout", "valiido auth logout [--profile NAME]"},
 	{"documents list", "valiido document list [--profile NAME] [--json]"},
 	{"documents read", "valiido document read ID [--text | --output FILE.pdf] [--profile NAME] [--json]"},
-	{"documents upload", "valiido document upload FILE.pdf [--profile NAME]"},
+	{"documents upload", "valiido document upload FILE [--profile NAME]"},
 	{"tasks list", "valiido task list [--profile NAME] [--json]"},
 	{"tasks read", "valiido task read ID [--profile NAME] [--json]"},
 	{"risks list", "valiido risk list [--profile NAME] [--json]"},
@@ -496,7 +496,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		return success(stdout, d)
 	case "documents upload":
-		upload, err := c.uploadPDF(ctx, uploadFile)
+		upload, err := c.uploadFile(ctx, uploadFile)
 		if err != nil {
 			return err
 		}
