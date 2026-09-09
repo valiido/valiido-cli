@@ -81,7 +81,7 @@ Examples retrieves up to 10,000 records; --limit controls the page size.
 Import accepts a JSON array, validates every batch, and returns confirmation tokens.
 Use command list to discover every command; --limit optionally caps the result at 1,000.
 IDs are tenant-scoped. PDFs require --output; files are never overwritten.
-PDF upload returns a signed attachment identifier for a document command.
+File upload returns signed identifiers for PDF documents and rich-text images.
 Login shows a URL and code for browser approval. It does not open a browser.
 Use --server http://127.0.0.1:3000 with auth login for local development.
 Import error indexes are 1-based.
@@ -201,7 +201,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if command == "documents upload" {
 		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
-			return failure("usage", "Expected a PDF filename before options.")
+			return failure("usage", "Expected a filename before options.")
 		}
 		uploadFile, rest = rest[0], rest[1:]
 	}
