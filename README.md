@@ -60,8 +60,10 @@ Resource and example lists follow pagination automatically, with a 10,000-record
 safety limit per invocation. Narrow larger result sets with `--query`.
 
 Commands return stable exit codes: `2` usage, `3` authentication, `4`
-authorization, `5` not found, `6` validation, `7` retryable/rate limited, `8`
-local storage, and `9` conflict. Other transport or protocol failures return `1`.
+authorization, plan restriction, or read-only record, `5` not found (including
+templates and examples), `6` invalid input or validation, `7` retryable/rate
+limited, `8` local storage, and `9` conflict: a stale version, a duplicate, or an
+already existing state. Other failures return `1`.
 
 ## Documentation
 

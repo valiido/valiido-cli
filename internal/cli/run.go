@@ -118,19 +118,22 @@ func exitCode(code string) int {
 	switch code {
 	case "usage":
 		return 2
-	case "unknown_command", "invalid_input", "validation_failed", "unsupported_resource_attributes":
+	case "unknown_command", "invalid_input", "validation_failed", "unsupported_resource_attributes",
+		"invalid_format", "invalid_file_reference", "placeholder_email_not_allowed", "invalid_cursor",
+		"invalid_reference_type", "unknown_resource_type", "unsupported_resource_action",
+		"unsupported_delete_strategy", "unsupported_commentable", "ambiguous_assignment":
 		return 6
 	case "auth", "invalid_grant", "access_denied", "expired_token":
 		return 3
-	case "forbidden", "not_authorized":
+	case "forbidden", "not_authorized", "read_only_record", "example_not_allowed", "guide_chapter_not_allowed":
 		return 4
-	case "not_found":
+	case "not_found", "template_not_found", "example_not_found", "guide_item_not_found":
 		return 5
 	case "rate_limited", "slow_down", "too_many_pending":
 		return 7
 	case "storage":
 		return 8
-	case "conflict":
+	case "conflict", "duplicate", "already_copied", "already_exists", "already_has_access", "already_in_progress":
 		return 9
 	default:
 		return 1

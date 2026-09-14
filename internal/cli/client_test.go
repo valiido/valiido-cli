@@ -255,6 +255,7 @@ func TestHTTPStatusMapping(t *testing.T) {
 		{http.StatusNotFound, `{}`, "not_found", 5},
 		{http.StatusConflict, `{"error":{"code":"conflict","message":"The resource changed."}}`, "conflict", 9},
 		{http.StatusConflict, `{}`, "conflict", 9},
+		{http.StatusConflict, `{"error":{"code":"duplicate","message":"A record with these unique attributes already exists."}}`, "duplicate", 9},
 		{http.StatusUnprocessableEntity, `{"error":{"code":"invalid_input","message":"Input is invalid."}}`, "invalid_input", 6},
 		{http.StatusUnprocessableEntity, `{}`, "invalid_input", 6},
 		{http.StatusTooManyRequests, `{}`, "rate_limited", 7},
@@ -833,8 +834,22 @@ func TestAbortedPDFDownloadRemovesPartialFile(t *testing.T) {
 }
 
 func TestExitCodeMappingAndOversizedResourceID(t *testing.T) {
-	if exitCode("not_found") != 5 || exitCode("invalid_input") != 6 || exitCode("not_authorized") != 4 || exitCode("storage") != 8 {
-		t.Fatal("unexpected API exit code mapping")
+	tests := map[string]int{
+		"usage": 2, "auth": 3, "forbidden": 4, "not_authorized": 4, "read_only_record": 4, "not_found": 5,
+		"example_not_allowed": 4, "guide_chapter_not_allowed": 4,
+		"template_not_found": 5, "example_not_found": 5, "guide_item_not_found": 5,
+		"unknown_command": 6, "invalid_input": 6, "validation_failed": 6, "unsupported_resource_attributes": 6,
+		"invalid_format": 6, "invalid_file_reference": 6, "placeholder_email_not_allowed": 6, "invalid_cursor": 6,
+		"invalid_reference_type": 6, "unknown_resource_type": 6, "unsupported_resource_action": 6,
+		"unsupported_delete_strategy": 6, "unsupported_commentable": 6, "ambiguous_assignment": 6,
+		"rate_limited": 7, "storage": 8,
+		"conflict": 9, "duplicate": 9, "already_copied": 9, "already_exists": 9, "already_has_access": 9, "already_in_progress": 9,
+		"framework_not_allowed": 1, "invalid_example_attachment": 1, "api": 1, "": 1,
+	}
+	for code, want := range tests {
+		if got := exitCode(code); got != want {
+			t.Errorf("exitCode(%q) = %d, want %d", code, got, want)
+		}
 	}
 	var out bytes.Buffer
 	if code := Run(context.Background(), []string{"resource", "read", "assets", "9223372036854775808"}, &out, io.Discard); code != 2 || !strings.Contains(out.String(), "9223372036854775807") {
