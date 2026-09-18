@@ -1,0 +1,2 @@
+PyMuPDF>=1.26,<3
+defusedxml>=0.7.1,<1

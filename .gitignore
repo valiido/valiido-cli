@@ -1,3 +1,7 @@
 /dist/
 /coverage.out
 .DS_Store
+
+/skills/valiido/scripts/.venv/
+/skills/valiido/scripts/**/__pycache__/
+/.valiido-quality.*/
