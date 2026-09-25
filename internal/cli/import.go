@@ -138,10 +138,9 @@ func (c *client) importResources(ctx context.Context, resourceType string, batch
 		rowOffset += importBatchItemCount(batch)
 	}
 	if len(validationErrors) > 0 {
-		return nil, &apiError{
-			Code: "validation_failed", Message: fmt.Sprintf("%d import rows could not be validated.", len(validationErrors)),
-			Details: map[string]any{"errors": validationErrors},
-		}
+		err := failure("validation_failed", fmt.Sprintf("%d import rows could not be validated.", len(validationErrors)))
+		err.Details = map[string]any{"errors": validationErrors}
+		return nil, err
 	}
 	if dryRun {
 		return compactImportResults(validated, batches, false)
@@ -176,8 +175,10 @@ func importValidationDetails(apiErr *apiError, batchIndex, rowOffset int) []any 
 				for key, value := range fields {
 					copy[key] = value
 				}
-				if index, ok := copy["index"].(float64); ok {
-					copy["index"] = int(index) + rowOffset
+				if number, ok := copy["index"].(json.Number); ok {
+					if index, err := number.Int64(); err == nil {
+						copy["index"] = int(index) + rowOffset
+					}
 				}
 				adjusted = append(adjusted, copy)
 			}
@@ -215,8 +216,8 @@ func compactImportResults(results []commandResult, batches [][]byte, prepared bo
 			batch.ConfirmationToken, _ = result.Data["confirmation_token"].(string)
 			batch.Command, _ = result.Data["command_name"].(string)
 			batch.Risk, _ = result.Data["risk"].(string)
-			if seconds, ok := result.Data["confirmation_expires_in"].(float64); ok {
-				batch.ConfirmationExpiresIn = int64(seconds)
+			if seconds, ok := result.Data["confirmation_expires_in"].(json.Number); ok {
+				batch.ConfirmationExpiresIn, _ = seconds.Int64()
 			}
 		}
 		compact = append(compact, batch)

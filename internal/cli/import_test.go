@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +71,7 @@ func TestReadImportBatchesRejectsUnsafeOrInvalidInputs(t *testing.T) {
 
 func TestImportValidatesEveryBatchBeforePreparing(t *testing.T) {
 	var dryRuns, preparations int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil || r.Form.Get("name") != "assets.bulk_create" {
 			t.Fatal("wrong bulk command request")
 		}
@@ -87,7 +86,7 @@ func TestImportValidatesEveryBatchBeforePreparing(t *testing.T) {
 				"input": map[string]any{"items": []any{"large input"}},
 			})
 		}
-	}))
+	})
 	defer server.Close()
 	c, _ := newClient(server.URL, "secret")
 	batches := [][]byte{[]byte(`{"items":[{"asset_name":"One"}]}`), []byte(`{"items":[{"asset_name":"Two"}]}`)}
@@ -105,7 +104,7 @@ func TestImportValidatesEveryBatchBeforePreparing(t *testing.T) {
 
 func TestImportCollectsValidationErrorsAcrossEveryBatch(t *testing.T) {
 	dryRuns := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil || r.Form.Get("dry_run") != "true" {
 			t.Fatal("import prepared data before every batch was valid")
 		}
@@ -119,7 +118,7 @@ func TestImportCollectsValidationErrorsAcrossEveryBatch(t *testing.T) {
 			"error": map[string]any{"code": "validation_failed", "message": "Invalid row."},
 			"data":  map[string]any{"errors": []any{map[string]any{"index": index, "message": "Invalid value."}}},
 		})
-	}))
+	})
 	defer server.Close()
 	c, _ := newClient(server.URL, "secret")
 	batches := [][]byte{
@@ -140,7 +139,7 @@ func TestImportCollectsValidationErrorsAcrossEveryBatch(t *testing.T) {
 // bulk_create reports row codes such as invalid_format inside a
 // validation_failed error, so those rows are listed instead of aborting.
 func TestImportListsRowErrorCodes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]any{"code": "validation_failed", "message": "Item 2: Deadline must be a valid date."},
@@ -148,7 +147,7 @@ func TestImportListsRowErrorCodes(t *testing.T) {
 				map[string]any{"index": 2, "code": "invalid_format", "field": "deadline", "message": "Deadline must be a valid date."},
 			}},
 		})
-	}))
+	})
 	defer server.Close()
 	c, _ := newClient(server.URL, "secret")
 	batches := [][]byte{[]byte(`{"items":[{"title":"One"},{"title":"Two","deadline":"soon"}]}`)}
@@ -171,11 +170,11 @@ func TestImportListsRowErrorCodes(t *testing.T) {
 // details, so it aborts the import with the server code.
 func TestImportAbortsOnBatchDuplicate(t *testing.T) {
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		w.WriteHeader(http.StatusConflict)
 		w.Write([]byte(`{"ok":false,"data":{},"error":{"code":"duplicate","message":"A record with these unique attributes already exists."}}`))
-	}))
+	})
 	defer server.Close()
 	c, _ := newClient(server.URL, "secret")
 	batches := [][]byte{[]byte(`{"items":[{"asset_name":"One"}]}`), []byte(`{"items":[{"asset_name":"Two"}]}`)}
@@ -187,12 +186,12 @@ func TestImportAbortsOnBatchDuplicate(t *testing.T) {
 }
 
 func TestDryRunImportOutputIsCompactAndMarked(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(commandResult{
 			OK: true, Data: map[string]any{"resources": []any{"large preview"}},
 			Summary: "Would create one asset.", DryRun: true,
 		})
-	}))
+	})
 	defer server.Close()
 	c, _ := newClient(server.URL, "secret")
 	results, err := c.importResources(context.Background(), "assets", [][]byte{[]byte(`{"items":[{"asset_name":"One"}]}`)}, true)
@@ -207,7 +206,7 @@ func TestDryRunImportOutputIsCompactAndMarked(t *testing.T) {
 
 func TestImportRejectsPreparedBatchesAfterLaterFailure(t *testing.T) {
 	preparations, rejects := 0, 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
@@ -226,7 +225,7 @@ func TestImportRejectsPreparedBatchesAfterLaterFailure(t *testing.T) {
 			return
 		}
 		writeCommandResult(w, map[string]any{"confirmation_token": "prepared-token"})
-	}))
+	})
 	defer server.Close()
 	c, _ := newClient(server.URL, "secret")
 	batches := [][]byte{[]byte(`{"items":[{"asset_name":"One"}]}`), []byte(`{"items":[{"asset_name":"Two"}]}`)}

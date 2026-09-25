@@ -1,128 +1,68 @@
 # Valiido CLI
 
-Use Valiido from a terminal or coding agent. The CLI connects to one Valiido
-account and discovers the available ISMS resources and actions from the live API.
-
-This repository contains the initial MVP. There is no published binary release
-yet.
-
-## Build
-
-Requires Go 1.24 or newer:
+`valiido` connects your terminal or coding agent to a Valiido ISMS account. Build it with Go 1.24 or newer.
 
 ```sh
 go build -o dist/valiido ./cmd/valiido
 ./dist/valiido --help
 ```
 
-## Get started
+## Quick start
 
 ```sh
 valiido auth login --profile work
-valiido command list --profile work
-valiido command list --query assets --limit 20 --profile work
-valiido resource list documents --profile work
-valiido resource list assets --query cloud --profile work
-valiido resource read documents 42 --profile work
-valiido resource examples documents --query scope --profile work
+valiido documents list --limit 20 --profile work
+valiido documents show 42 --profile work
+valiido open documents 42 --profile work
 ```
 
-The login command prints a browser link and pairing code. Open the link, sign in
-to Valiido and approve the connection. Credentials are stored in the operating
-system keyring. Run `valiido auth logout --profile work` to revoke the connection.
+Approve the pairing code in your browser. Credentials use the OS keyring by default. Use `valiido auth logout --profile work` to revoke the connection.
 
-Changes use the commands advertised by the connected account:
+The CLI checks the `Valiido-Tenant` and `Valiido-Scope` response headers against the selected profile before reading the body or returning a confirmation token. For older servers that omit both headers, it checks `GET /api/v1/me` once per invocation, before using the first response.
+
+Use `valiido more` for ISMS areas, leaf `--help` for flags, and `valiido command list` for live actions and input schemas. `valiido command run NAME` runs a catalog action. `valiido api schema` prints the connected API contract.
+
+## Changes and imports
+
+Read the latest resource version before editing. Preview with the same input and profile you will use to prepare the change.
 
 ```sh
-valiido command run tasks.update \
-  --input '{"id":42,"version":3,"attributes":{"title":"Review access"}}' \
-  --profile work
-valiido command confirm CONFIRMATION_TOKEN --profile work
+valiido tasks update --input-file patch.json --dry-run --profile work
+valiido tasks update --input-file patch.json --json --profile work |
+  valiido command confirm - --profile work
 ```
 
-A write command prepares a change first. It is applied only after
-`command confirm`; use `command reject` to discard it.
-
-Large resource imports use the same advertised `TYPE.bulk_create` command in
-batches of up to 100 records. The file must contain a JSON array of attribute
-objects:
+Use the preparation output with `valiido command reject -` to discard it. If a confirmation loses its response, read the affected record before preparing again. On a version conflict, read and review the newer state.
 
 ```sh
 valiido resource import assets --file assets.json --dry-run --profile work
-valiido resource import assets --file assets.json --profile work
+valiido resource import assets --file assets.json --profile work --json
 ```
 
-The first command validates the complete file. The second validates it again
-and returns one confirmation token per batch; confirm those tokens to apply the
-import. No batch is stored before confirmation.
+Imports take a JSON array and validate the whole file. Confirm each returned batch separately. See the [import guide](skills/valiido/references/importing.md) for source conversion and verification.
 
-Resource and example lists follow pagination automatically, with a 10,000-record
-safety limit per invocation. Narrow larger result sets with `--query`.
+## Output and recovery
 
-Commands return stable exit codes: `2` usage, `3` authentication, `4`
-authorization, plan restriction, or read-only record, `5` not found (including
-templates and examples), `6` invalid input or validation, `7` retryable/rate
-limited, `8` local storage, and `9` conflict: a stale version, a duplicate, or an
-already existing state. Other failures return `1`.
+| Need | Option |
+| --- | --- |
+| JSON envelope with data, summary, breadcrumbs and retry count | `--json` or pipe stdout |
+| JSON data only | `--quiet` |
+| Filter the envelope using local jq | `--jq EXPR` |
+| A compact result | `--ids-only`, `--count`, `--markdown`, or `--styled` |
 
-## Documentation
+Use the error code, hint and recovery breadcrumb to diagnose a failure. `valiido doctor --profile work` checks the connection. See `valiido help output`, `valiido help exit-codes` and `valiido help environment` for details.
 
-- Authenticated API reference: <https://app.valiido.com/api>
-- Authenticated machine-readable specification: <https://app.valiido.com/api/openapi.json>
-- CLI reference: `valiido --help`
-- Live resources, actions and input schemas: `valiido command list`
-- Connected API schema: `valiido api schema`
+`--limit N` caps returned rows. Follow the `load_more` breadcrumb or reuse the cursor with the same query and profile. The CLI retries transient reads and command requests. Upload initialization and token exchange only retry rate-limit responses. Confirmations replay the same token.
 
-Sign in to view the browser reference. The machine-readable specification accepts
-either a browser session or an active agent token. Both are generated from the
-Rails routes, the public operation contract and the same command registry used to
-execute requests. Resource and command lists are therefore not copied into this
-README.
-
-## Agent setup
+## Agent setup and development
 
 ```sh
 valiido setup
-# Or install for one agent only:
-valiido setup --agent codex
-valiido setup --agent claude
+valiido shell-completion bash
 ```
 
-This installs the bundled [Valiido skill](skills/valiido/SKILL.md) for Codex,
-Claude Code, or both. Ensure `valiido` is on the agent's `PATH` and restart the
-agent after installing the skill.
+`valiido setup --agent codex` and `valiido setup --agent claude` install the [agent skill](skills/valiido/SKILL.md) for one agent. Put the binary on the agent's PATH.
 
-## Local development
+HTTP logins require a loopback address. Use `./dist/valiido auth login --server http://127.0.0.1:3000 --profile development` against a local Rails server.
 
-With the Rails application running at `http://127.0.0.1:3000`:
-
-```sh
-go build -o dist/valiido ./cmd/valiido
-./dist/valiido auth login \
-  --server http://127.0.0.1:3000 \
-  --profile development
-```
-
-HTTP is accepted only for loopback development servers. Other server origins
-must use HTTPS.
-
-## Verify
-
-```sh
-bin/quality
-```
-
-The same standalone check runs for every pull request and every push to `main`.
-It formats, verifies, vets, race-tests, and cross-compiles only this repository.
-The workflow has read-only repository access, receives no application secrets,
-and never checks out or references the private Valiido application.
-
-The Rails repository provides `bin/check-agent-api` for the cross-repository API
-contract, generated-route drift, and security checks. The CLI help is generated
-from its command definitions; resources, actions, and schemas remain live server
-data instead of copied documentation.
-
-Resource reads include an integer `version`. When a command's live input schema
-requires `version`, send the value from the latest read. A conflict means the
-resource changed after it was read: read it again, review the new state, and only
-then prepare a new change. The CLI never retries conflicting writes automatically.
+Run `bin/quality` for format, vet, race tests and builds. Run `bin/check-agent-api` from the Rails checkout to verify both repos against the public API contract.

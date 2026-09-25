@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -17,25 +18,31 @@ import (
 )
 
 const (
-	profileLockWait          = 30 * time.Second
+	profileLockWait          = 5 * time.Second
+	profileLockUntilDeadline = -1
 	profileLockPoll          = 50 * time.Millisecond
 	orphanLockGrace          = time.Second
 	maxLockOwnerBytes        = 1024
 	maxStoredCredentialBytes = 4096
 )
 
+var profilePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
 type lockOwner struct {
-	PID   int    `json:"pid"`
-	Nonce string `json:"nonce"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	PID       int       `json:"pid"`
+	Nonce     string    `json:"nonce"`
 }
 
 type session struct {
-	Server       string    `json:"server"`
-	TenantNumber string    `json:"tenant_number"`
-	Scope        string    `json:"scope,omitempty"`
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	Server         string     `json:"server"`
+	TenantNumber   string     `json:"tenant_number"`
+	Scope          string     `json:"scope,omitempty"`
+	AccessToken    string     `json:"access_token"`
+	RefreshToken   string     `json:"refresh_token"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	RefreshAfter   *time.Time `json:"refresh_after,omitempty"`
+	RefreshPending bool       `json:"refresh_pending,omitempty"`
 }
 
 type store struct {
@@ -45,14 +52,30 @@ type store struct {
 }
 
 func openStore(profile string, file bool) (*store, func(), error) {
-	if !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`).MatchString(profile) {
-		return nil, nil, failure("usage", "Profile must contain only letters, numbers, hyphens or underscores.")
+	return openStoreContext(context.Background(), profile, file, profileLockWait)
+}
+
+func profileStore(profile string, file bool) (*store, error) {
+	if !profilePattern.MatchString(profile) {
+		return nil, failure("usage", "Profile must contain only letters, numbers, hyphens or underscores.")
 	}
 	root, err := os.UserConfigDir()
 	if err != nil {
-		return nil, nil, failure("storage", "Could not locate the user configuration directory.")
+		return nil, failure("storage", "Could not locate the user configuration directory.")
 	}
 	dir := filepath.Join(root, "valiido")
+	if info, err := os.Lstat(dir); err == nil && !info.IsDir() {
+		return nil, failure("storage", "Credential directory must be a real directory.")
+	}
+	return &store{dir: dir, profile: profile, file: file}, nil
+}
+
+func openStoreContext(ctx context.Context, profile string, file bool, wait time.Duration) (*store, func(), error) {
+	s, err := profileStore(profile, file)
+	if err != nil {
+		return nil, nil, err
+	}
+	dir := s.dir
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, nil, failure("storage", "Could not create the credential directory.")
 	}
@@ -64,31 +87,63 @@ func openStore(profile string, file bool) (*store, func(), error) {
 		return nil, nil, failure("storage", "Could not secure the credential directory.")
 	}
 	lock := filepath.Join(dir, profile+".lock")
-	owner := lockOwner{PID: os.Getpid(), Nonce: randomLockNonce()}
-	deadline := time.Now().Add(profileLockWait)
+	owner := lockOwner{PID: os.Getpid(), Nonce: randomLockNonce(), StartedAt: time.Now().UTC()}
+	deadline := time.Now().Add(wait)
+	busy := failure("busy", "Profile is still in use. Wait for the other Valiido command to finish.")
+	contended := false
 	for {
-		err = os.Mkdir(lock, 0700)
-		if err == nil {
-			if err := writeLockOwner(lock, owner); err != nil {
-				_ = os.Remove(lock)
-				return nil, nil, failure("storage", "Could not secure the profile lock.")
+		if ctx.Err() != nil {
+			if contended && wait == profileLockUntilDeadline && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, nil, busy
 			}
-			break
+			return nil, nil, failure("cancelled", "Profile lock wait cancelled.")
 		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, nil, failure("storage", "Could not acquire the profile lock.")
+		guard, err := acquireLockGuard(lock + ".guard")
+		if err != nil {
+			return nil, nil, failure("storage", "Could not secure the profile lock.")
 		}
-		if reclaimStaleLock(lock) {
-			continue
+		if guard != nil {
+			acquired, err := tryProfileLock(lock, owner)
+			if err != nil {
+				guard()
+				return nil, nil, err
+			}
+			if acquired {
+				var once sync.Once
+				return s, func() {
+					once.Do(func() {
+						defer guard()
+						releaseLock(lock, owner)
+					})
+				}, nil
+			}
+			guard()
 		}
-		if time.Now().After(deadline) {
-			return nil, nil, failure("busy", "Profile is still in use. Wait for the other Valiido command to finish.")
+		contended = true
+		if wait != profileLockUntilDeadline && !time.Now().Before(deadline) {
+			return nil, nil, busy
 		}
-		time.Sleep(profileLockPoll)
+		waitFor(ctx, profileLockPoll)
 	}
-	s := &store{dir: dir, profile: profile, file: file}
-	var once sync.Once
-	return s, func() { once.Do(func() { releaseLock(lock, owner) }) }, nil
+}
+
+func tryProfileLock(lock string, owner lockOwner) (bool, error) {
+	err := os.Mkdir(lock, 0700)
+	if errors.Is(err, os.ErrExist) && canReclaimProfileLock && reclaimStaleLock(lock) {
+		err = os.Mkdir(lock, 0700)
+	}
+	if errors.Is(err, os.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, failure("storage", "Could not acquire the profile lock.")
+	}
+	if err := writeLockOwner(lock, owner); err != nil {
+		_ = os.Remove(filepath.Join(lock, "owner.json"))
+		_ = os.Remove(lock)
+		return false, failure("storage", "Could not secure the profile lock.")
+	}
+	return true, nil
 }
 
 func randomLockNonce() string {
@@ -104,7 +159,16 @@ func writeLockOwner(lock string, owner lockOwner) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(lock, "owner.json"), data, 0600)
+	name := filepath.Join(lock, "owner.json.tmp")
+	if err := os.WriteFile(name, data, 0600); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, filepath.Join(lock, "owner.json")); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 func readLockOwner(lock string) (lockOwner, error) {
@@ -121,14 +185,15 @@ func readLockOwner(lock string) (lockOwner, error) {
 }
 
 func reclaimStaleLock(lock string) bool {
+	info, err := os.Lstat(lock)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 	owner, err := readLockOwner(lock)
 	if err != nil {
-		info, statErr := os.Lstat(lock)
-		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || time.Since(info.ModTime()) < orphanLockGrace {
-			return false
-		}
-		return renameStaleLock(lock)
+		return time.Since(info.ModTime()) >= orphanLockGrace && renameStaleLock(lock)
 	}
+
 	if processAlive(owner.PID) {
 		return false
 	}
@@ -141,6 +206,7 @@ func renameStaleLock(lock string) bool {
 		return false
 	}
 	_ = os.Remove(filepath.Join(stale, "owner.json"))
+	_ = os.Remove(filepath.Join(stale, "owner.json.tmp"))
 	_ = os.Remove(stale)
 	return true
 }
@@ -168,8 +234,14 @@ func (s *store) load() (session, error) {
 		s.file = true
 		data, err = readBoundedFile(s.path(), maxStoredCredentialBytes)
 	} else if errors.Is(err, os.ErrNotExist) {
+		s.file = false
 		var raw string
 		raw, err = keyring.Get("valiido-cli", s.profile)
+		if err != nil && !errors.Is(err, keyring.ErrNotFound) {
+			failure := failure("auth", "System keyring is unavailable and this profile has no credential file.")
+			failure.Hint = "Unlock the system keyring, or add --file-credentials to auth login for headless use."
+			return value, failure
+		}
 		if len(raw) > maxStoredCredentialBytes {
 			return value, failure("storage", "Invalid stored credentials; sign in again.")
 		}

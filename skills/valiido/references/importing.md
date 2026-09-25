@@ -69,9 +69,51 @@ filenames in skills, documentation, tests, fixtures, logs, or command examples.
   template context belongs on the parent; item-specific values belong on the
   child. Do not invent an empty child merely to hold a parent-level comment.
 
+## Local converters
+
+Run the bundled commands from the skill directory with isolated Python. Use a
+local virtual environment or the same dependencies installed system-wide.
+
+```sh
+skill="$PWD"
+python3 -m venv scripts/.venv
+scripts/.venv/bin/python -I -m pip install -r scripts/requirements.txt
+work=$(mktemp -d)
+cd "$work"
+```
+
+Place working copies of the inputs in the private directory before running the
+commands. Each output command creates a new file.
+
+```sh
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" convert procedure.docx procedure.html
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" check procedure.docx procedure.html --report words.json
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" preview procedure.docx procedure.html review.html
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" table inventory.xlsx rows.jsonl --header-row 2
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" preview inventory.xlsx rows.jsonl inventory-review.html
+```
+
+- Use `convert` for editable PDF or DOCX. Extracted images are private sibling
+  files. Upload approved images before the write and replace the local image
+  references with the corresponding ActionText attachments.
+- Run `check` on every rich-text conversion before import, and again on the
+  stored HTML during verification. Exit 1 means source words are missing.
+  Review the private report and resolve discrepancies before proceeding.
+- Use `table` for XLSX, UTF-8 CSV or ruled PDF tables. Select an XLSX sheet with
+  `--sheet` or set the CSV delimiter with `--delimiter`. The JSONL output
+  contains source references and column values. Review which rows are records,
+  map fields and types against the live schema, and assemble the JSON input for
+  `resource import --dry-run`.
+- Open the local `preview` and get human approval before writing. Check merged
+  cells, page boundaries, record counts and images against the source. PDF
+  previews render the pages. DOCX and spreadsheet previews show source content
+  and structure. Compare Word layout in the original document when it matters.
+
 ## Execute safely
 
-- Keep customer JSON in mode-0600 files and use `--input-file`.
+- Keep customer JSON in mode-0600 files and use `--input-file`. For example,
+  prepare a synthetic task with `valiido tasks create --input-file task.json`.
+  Use `--json` when recording results for automation.
 - Keep an idempotent local state file that maps a stable source key to the
   tenant-scoped record id and completed operations. On restart, read and verify
   that record before continuing; do not identify records by similar titles.
@@ -80,7 +122,12 @@ filenames in skills, documentation, tests, fixtures, logs, or command examples.
 - A prepared write has not happened yet. When `command run` returns
   `pending_confirmation`, review it and call `command confirm` when the user has
   authorized that exact change. Verify the resulting resource rather than
-  treating preparation as success.
+  treating preparation as success. If confirmation ends with an ambiguous
+  network or not-found error, check the record using a read or list before
+  preparing another write. A consumed token cannot create a second record.
+- Upload retries reuse the same storage location and bytes. If upload
+  initialization fails without returning attachment identifiers, record the
+  failure in the import state before starting another upload.
 - Use `resource import` for homogeneous new records. Use individual commands for
   template copies, updates, relationships, attachments, parent/child resources,
   and mixed imports whose progress must be resumed independently.

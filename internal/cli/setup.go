@@ -11,11 +11,13 @@ import (
 	"github.com/valiido/valiido-cli/skills"
 )
 
-func setup(args []string, stdout io.Writer) error {
+func setup(args []string, stdout *output) error {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	agent := flags.String("agent", "all", "Install for codex, claude or all")
 	force := flags.Bool("force", false, "Replace an existing Valiido skill")
+	dryRun := flags.Bool("dry-run", false, "Show which skills would be installed")
+	finishOutput := outputFlags(flags, stdout)
 	if err := rejectDuplicateFlags(args, flags); err != nil {
 		return err
 	}
@@ -28,6 +30,9 @@ func setup(args []string, stdout io.Writer) error {
 	}
 	if flags.NArg() != 0 || (*agent != "all" && *agent != "codex" && *agent != "claude") {
 		return failure("usage", "Use "+commandUsage("setup")+".")
+	}
+	if err := finishOutput(); err != nil {
+		return err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) {
@@ -59,12 +64,16 @@ func setup(args []string, stdout io.Writer) error {
 			return err
 		}
 	}
+	if *dryRun {
+		return writeResponse(stdout, response{OK: true, DryRun: true, Summary: "Skill installation preview",
+			Data: map[string]any{"skills": paths}})
+	}
 	for _, path := range paths {
 		if err := installSkill(path, *force); err != nil {
 			return err
 		}
 	}
-	return success(stdout, map[string]any{"skills": paths})
+	return writeResponse(stdout, response{OK: true, Summary: "Skills installed", Data: map[string]any{"skills": paths}})
 }
 
 func secureSkillPath(home, agentDirectory string) (string, error) {
@@ -73,9 +82,6 @@ func secureSkillPath(home, agentDirectory string) (string, error) {
 		current = filepath.Join(current, component)
 		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
-			if err := os.Mkdir(current, 0755); err != nil {
-				return "", failure("storage", "Cannot create the Valiido skill directory.")
-			}
 			continue
 		}
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0022 != 0 {
@@ -158,3 +164,5 @@ func installSkillFile(path, expected string, force bool) error {
 	}
 	return nil
 }
+
+func runSetup(call *invocation) error { return setup(call.args, call.output) }

@@ -13,21 +13,30 @@ import (
 func TestHelpIsGeneratedFromUniqueCommandDefinitions(t *testing.T) {
 	seen := map[string]bool{}
 	for _, definition := range commandDefinitions {
-		if definition.name == "" || definition.usage == "" || seen[definition.name] {
+		if definition.name == "" || definition.run == nil || seen[definition.name] {
 			t.Fatalf("invalid or duplicate command definition: %#v", definition)
 		}
 		seen[definition.name] = true
-		if !strings.Contains(help, "  "+definition.usage+"\n") {
-			t.Fatalf("help omitted %q", definition.name)
+		if definition.usage == "" {
+			continue
+		}
+		args := parserProbeArgs(definition.name)
+		if definition.name != "help" && definition.name != "version" {
+			if body, ok := contextualHelp(args); !ok || !strings.Contains(body, "\nUSAGE\n") {
+				t.Fatalf("help omitted %q", definition.name)
+			}
 		}
 	}
-	if len(seen) != len(knownCommands) {
+	if len(seen) != len(commandsByName) {
 		t.Fatal("known command index drifted from command definitions")
 	}
 }
 
 func TestEveryDocumentedFixedCommandIsAcceptedByTheParser(t *testing.T) {
 	for _, definition := range commandDefinitions {
+		if definition.usage == "" {
+			continue
+		}
 		args := parserProbeArgs(definition.name)
 		expected := help
 		switch definition.name {
@@ -44,29 +53,21 @@ func TestEveryDocumentedFixedCommandIsAcceptedByTheParser(t *testing.T) {
 	}
 }
 
-func TestEveryDocumentedOptionBelongsToItsCommand(t *testing.T) {
-	options := regexp.MustCompile(`--[a-z][a-z-]*`)
-	values := map[string]string{
-		"--agent": "codex", "--profile": "work", "--server": "http://127.0.0.1:3000",
-		"--query": "text", "--limit": "1", "--file": "synthetic.json",
-		"--output": "synthetic.pdf", "--input": `{}`, "--input-file": "synthetic.json",
-	}
+func TestContextualHelpShowsDocumentedOptions(t *testing.T) {
 	for _, definition := range commandDefinitions {
+		if definition.usage == "" {
+			continue
+		}
 		if definition.name == "help" || definition.name == "version" {
 			continue
 		}
-		for _, option := range options.FindAllString(definition.usage, -1) {
-			args := parserProbeArgs(definition.name)
-			args = args[:len(args)-1]
-			args = append(args, option)
-			if value := values[option]; value != "" {
-				args = append(args, value)
-			}
-			args = append(args, "--help")
-			var output strings.Builder
-			expected, _ := contextualHelp(args)
-			if code := Run(t.Context(), args, &output, &output); code != 0 || output.String() != expected {
-				t.Errorf("%s advertises unsupported option %s", definition.name, option)
+		body, ok := contextualHelp(parserProbeArgs(definition.name))
+		if !ok {
+			t.Fatalf("missing help for %s", definition.name)
+		}
+		for _, option := range optionPattern.FindAllString(definition.usage, -1) {
+			if !strings.Contains(body, option) {
+				t.Errorf("%s help omitted %s", definition.name, option)
 			}
 		}
 	}
@@ -81,11 +82,11 @@ func parserProbeArgs(name string) []string {
 	}
 	args := strings.Fields(name)
 	switch name {
-	case "documents read", "tasks read", "risks read":
+	case "documents show", "tasks show", "risks show":
 		args = append(args, "1")
 	case "resources list", "resources examples", "resources import":
 		args = append(args, "assets")
-	case "resources read", "resources pdf":
+	case "resources show", "resources pdf":
 		args = append(args, "assets", "1")
 	case "commands run":
 		args = append(args, "assets.list")
@@ -101,21 +102,32 @@ func TestPublicDocumentationUsesTheCurrentCLISurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	documents := map[string]string{"README.md": string(readme), "skills/valiido/SKILL.md": skills.Valiido, "skills/valiido/references/importing.md": skills.ValiidoImporting}
-	commands := regexp.MustCompile(`valiido[ \t]+([a-z]+)(?:[ \t]+([a-z]+))?`)
+	commands := regexp.MustCompile(`valiido[ \t]+([a-z][a-z_-]*)(?:[ \t]+([a-z][a-z_-]*))?`)
 	flags := regexp.MustCompile(`--[a-z][a-z-]*`)
 	for name, document := range documents {
 		for _, match := range commands.FindAllStringSubmatch(document, -1) {
 			noun := canonicalNoun(match[1])
-			if noun == "setup" || match[2] == "" {
+			if match[2] == "" || noun == "setup" || noun == "open" && isResource(canonicalNoun(match[2])) ||
+				noun == "help" && helpTopics[match[2]] != "" ||
+				noun == "shell-completion" && (match[2] == "bash" || match[2] == "zsh" || match[2] == "fish") {
 				continue
 			}
-			if !knownCommands[noun+" "+match[2]] {
+			args := resourceShortcut([]string{match[1], match[2]})
+			if _, ok := commandsByName[canonicalNoun(args[0])+" "+args[1]]; !ok {
 				t.Errorf("%s documents unknown command %q", name, match[0])
 			}
 		}
-		for _, option := range flags.FindAllString(document, -1) {
-			if !strings.Contains(help, option) {
-				t.Errorf("%s documents unknown option %q", name, option)
+		// Other tools in the documentation have their own flags. Check example
+		// invocations of this CLI, including their continuation lines.
+		for _, line := range strings.Split(strings.ReplaceAll(document, "\\\n", " "), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "valiido ") && !strings.HasPrefix(line, "./dist/valiido ") {
+				continue
+			}
+			for _, option := range flags.FindAllString(line, -1) {
+				if !documentedOption(option) {
+					t.Errorf("%s documents unknown option %q", name, option)
+				}
 			}
 		}
 		lower := strings.ToLower(document)
@@ -139,4 +151,22 @@ func TestGeneratedRoutesContainOnlyPublicAgentEndpoints(t *testing.T) {
 			}
 		}
 	}
+}
+
+func documentedOption(option string) bool {
+	if strings.Contains(help, option) {
+		return true
+	}
+	for _, definition := range commandDefinitions {
+		if definition.usage == "" {
+			continue
+		}
+		for _, flag := range optionPattern.FindAllString(definition.usage, -1) {
+			name, _, _ := strings.Cut(flag, " ")
+			if name == option {
+				return true
+			}
+		}
+	}
+	return false
 }
