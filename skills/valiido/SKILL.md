@@ -22,4 +22,4 @@ Use the user's language. Preserve the language and formatting of existing record
 
 Preserve complete ActionText HTML and existing attachments. Use `valiido documents upload FILE --json`, then use `signed_id` in a PDF field or `attachable_sgid` in ActionText. Adapt examples to known tenant facts and follow guide references within the requested scope.
 
-For customer migrations, follow the [import guide](references/importing.md) through its quality checks.
+For customer migrations, follow the [import guide](references/importing.md) through its quality checks. Fit data into Valiido's tools and example templates; never copy source files one to one.

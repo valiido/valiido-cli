@@ -39,6 +39,39 @@ filenames in skills, documentation, tests, fixtures, logs, or command examples.
   sheet and row references in the mapping so errors and verification point back
   to the exact source.
 
+## Fit the data into Valiido
+
+Never transfer a source file one to one. The result must look as if the
+customer had built the ISMS in Valiido from the start.
+
+- **Tool first.** Everything Valiido has a tool for goes into that tool, never as
+  a document beside it: asset inventories, risk assessments, action and
+  training plans, audit plans, onboarding/offboarding checklists, key and device
+  handovers, granted access lists, project lists, incident and change logs,
+  legal and interested-party registers. Evidence such as signed attendance
+  lists, audit protocols, completed checklists, or invoices stays a file, but is
+  attached to or referenced from the tool record it proves.
+- **Template is the target structure.** Read the examples of every target type
+  first (`valiido <noun> examples`). Follow their structure, heading order,
+  title style, field usage, and enum values; keep the customer's content.
+  Link every document to its matching example. Compare against the examples of
+  the target server, not a local copy that may be outdated.
+- **Documents.** Remove letterheads, logos, repeated titles, footers, and empty
+  rows. Turn numbered section paragraphs into real headings following the
+  example. Move header metadata with a native field into that field (for
+  example responsibilities or scope). Valiido keeps the change history itself,
+  so a source revision table is not document content.
+- **Import comment.** One comment per record, written once (comments cannot be
+  removed later): `Importiert am <date> aus <source>.`, followed by header data
+  without a native field (author, approver, classification, version) and the
+  source revision history.
+- **Registers.** No source artefacts in fields: sheet or row keys, repeated
+  labels such as `Status: 100`, spreadsheet serial dates, `s.u.` references,
+  `/` placeholders. Use natural titles in the example's style and keep source
+  keys in the local state file and the import comment. Read every column's
+  meaning from its header before mapping; a yes/no column about downtime is not
+  a security requirement.
+
 ## Preserve customer material
 
 - Decide explicitly for each document whether its value lies in editable
@@ -162,6 +195,13 @@ Before reporting success, verify all of the following through the CLI:
   source values remain represented and report any material semantic change.
 - No source value was silently lost and no customer material entered a source
   repository or retained command line.
+- Before a source document is moved to the trash because its content now lives
+  in a tool, a row-by-row reconciliation shows every source row and value in a
+  target record and field, with zero missing.
+- A second run of every import step writes nothing.
+- After AuditMagic has reviewed the imported records, sort its findings into
+  customer gaps, review mistakes, and import artefacts. Correct the data for
+  artefacts instead of dismissing them, and give every dismissal a short reason.
 
 If any check fails, describe the import as incomplete, correct the affected
 records, and repeat the gate. Report final counts, unmatched examples, preserved
