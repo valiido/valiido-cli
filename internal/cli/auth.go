@@ -84,7 +84,10 @@ func login(ctx context.Context, s *store, server string, stderr io.Writer) (iden
 	saved := false
 	defer func() {
 		if !saved {
-			_ = revoke(ctx, c, tokens.RefreshToken)
+			// Revoke even when cancellation caused the failure; the token was never stored.
+			cleanup, cancel := cleanupContext(ctx)
+			defer cancel()
+			_ = revoke(cleanup, c, tokens.RefreshToken)
 		}
 	}()
 	value := session{Server: c.base, Scope: tokens.Scope}
@@ -124,6 +127,19 @@ func rememberScope(ctx context.Context, profile string, value *session, scope st
 }
 
 const commandRequestBudget = 120 * time.Second
+
+// File transfers and multi-batch imports need more than one command budget.
+const transferBudget = 10 * time.Minute
+
+// transferRequestTimeout caps one upload or download request within transferBudget.
+const transferRequestTimeout = 5 * time.Minute
+
+const cleanupBudget = 15 * time.Second
+
+// cleanupContext survives cancellation of ctx so best-effort cleanup still reaches the server.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cleanupBudget)
+}
 
 func (value session) nextRefresh() time.Time {
 	if value.RefreshPending {
@@ -188,8 +204,9 @@ func refreshSessionTokens(ctx context.Context, s *store, value session, retryLog
 	}, false, true, &tokens)
 	if err != nil {
 		var apiErr *apiError
-		if errors.As(err, &apiErr) && (apiErr.Code == "slow_down" || apiErr.Code == "rate_limited") {
-			// Both responses reject the request before consuming the token.
+		if errors.As(err, &apiErr) && (apiErr.Code == "slow_down" || apiErr.Code == "rate_limited" || apiErr.status == http.StatusServiceUnavailable) {
+			// These responses reject the request before consuming the token.
+			// 502 and 504 stay pending: an upstream may have processed the refresh.
 			value.RefreshPending = false
 			if apiErr.Code == "slow_down" {
 				next := time.Now().Add(30 * time.Second)
@@ -330,9 +347,16 @@ func logoutProfile(call *invocation) error {
 }
 
 func (call *invocation) withSession(action func(context.Context, *client) error) error {
-	ctx, cancel := context.WithTimeout(call.context, commandRequestBudget)
+	return call.withSessionBudget(commandRequestBudget, action)
+}
+
+func (call *invocation) withSessionBudget(budget time.Duration, action func(context.Context, *client) error) error {
+	ctx, cancel := context.WithTimeout(call.context, budget)
 	defer cancel()
-	store, unlock, err := openStoreContext(ctx, call.output.profile, false, profileLockUntilDeadline)
+	// A busy profile is reported after the normal command budget, even for long transfers.
+	lockCtx, cancelLock := context.WithTimeout(ctx, commandRequestBudget)
+	defer cancelLock()
+	store, unlock, err := openStoreContext(lockCtx, call.output.profile, false, profileLockUntilDeadline)
 	if err != nil {
 		return err
 	}

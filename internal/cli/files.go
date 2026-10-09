@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 const maxFileUpload = 50 << 20
@@ -130,7 +129,7 @@ func (c *client) putUpload(ctx context.Context, uploadURL *url.URL, headers map[
 		}
 	}
 	httpClient := *c.http
-	httpClient.Timeout = 5 * time.Minute
+	httpClient.Timeout = transferRequestTimeout
 	response, err := c.withRetry(ctx, retryPolicy{transient: true, rateLimited: true}, httpClient.Timeout, func() (*http.Response, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL.String(), bytes.NewReader(data))
 		if err != nil {
@@ -191,6 +190,11 @@ func (client *client) downloadPDF(ctx context.Context, resourceType string, id i
 		return failure("storage", "Output directory is unavailable. Choose an existing directory.")
 	}
 	const maxPDF = 50 << 20
+	previous := client.http
+	transfer := *client.http
+	transfer.Timeout = transferRequestTimeout
+	client.http = &transfer
+	defer func() { client.http = previous }()
 	response, err := client.requestAPI(ctx, "GET", fmt.Sprintf(apiPaths["api/resources#pdf"], url.PathEscape(resourceType), id), nil, true, func(resp *http.Response) (*http.Response, error) {
 		buffered, err := bufferResponse(resp, maxPDF)
 		var apiErr *apiError

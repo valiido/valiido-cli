@@ -225,7 +225,10 @@ func compactImportResults(results []commandResult, batches [][]byte, prepared bo
 	return compact, nil
 }
 
+// rejectPrepared releases batches whose tokens were never shown, even after cancellation.
 func rejectPrepared(ctx context.Context, c *client, prepared []commandResult) {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	for _, prior := range prepared {
 		if token, ok := prior.Data["confirmation_token"].(string); ok && token != "" {
 			_, _ = c.resolveCommand(ctx, "reject", token)

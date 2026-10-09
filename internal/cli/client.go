@@ -43,6 +43,7 @@ type apiError struct {
 	Message string         `json:"message"`
 	Hint    string         `json:"hint,omitempty"`
 	Details map[string]any `json:"details,omitempty"`
+	status  int
 }
 
 func (e *apiError) Error() string { return e.Message }
@@ -322,7 +323,9 @@ func decodeJSON(data []byte, out any) error {
 
 func responseError(status int, data []byte) error {
 	if transientStatus(status) {
-		return failure("server_unavailable", fmt.Sprintf("Server returned HTTP %d.", status))
+		err := failure("server_unavailable", fmt.Sprintf("Server returned HTTP %d.", status))
+		err.status = status
+		return err
 	}
 
 	var payload struct {

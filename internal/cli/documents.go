@@ -74,7 +74,11 @@ func runDocumentRead(call *invocation) error {
 	if text && call.output.mode != "" {
 		return usageError("Use either --text or --" + call.output.mode + ", not both.")
 	}
-	return call.withSession(func(ctx context.Context, client *client) error {
+	budget := commandRequestBudget
+	if filename != "" {
+		budget = transferBudget
+	}
+	return call.withSessionBudget(budget, func(ctx context.Context, client *client) error {
 		return readDocument(ctx, client, call.output, id, filename, text, dryRun)
 	})
 }
@@ -98,7 +102,7 @@ func uploadDocument(call *invocation) error {
 		return writeResponse(call.output, response{OK: true, DryRun: true, Summary: "Upload preview",
 			Data: map[string]any{"filename": filepath.Base(filename), "content_type": contentType, "byte_size": len(data)}})
 	}
-	return call.withSession(func(ctx context.Context, client *client) error {
+	return call.withSessionBudget(transferBudget, func(ctx context.Context, client *client) error {
 		upload, err := client.uploadFile(ctx, filename)
 		if err != nil {
 			return err

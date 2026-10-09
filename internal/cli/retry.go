@@ -84,6 +84,10 @@ func (c *client) withRetry(ctx context.Context, policy retryPolicy, timeout time
 			return resp, nil
 		}
 		delay := retryAfterDelay(resp, attempt)
+		if deadline, ok := ctx.Deadline(); ok && resp != nil && time.Now().Add(delay).After(deadline) {
+			// Waiting would only end in cancellation; report the server's answer instead.
+			return resp, nil
+		}
 		if resp != nil {
 			resp.Body.Close()
 		}

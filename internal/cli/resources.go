@@ -175,7 +175,7 @@ func importResource(call *invocation) error {
 	if err != nil {
 		return err
 	}
-	return call.withSession(func(ctx context.Context, client *client) error {
+	return call.withSessionBudget(transferBudget, func(ctx context.Context, client *client) error {
 		results, err := client.importResources(ctx, kind, batches, dryRun)
 		if err != nil {
 			return err
@@ -203,7 +203,7 @@ func saveResourcePDF(call *invocation) error {
 	if filename == "" {
 		return usageError("--output is required for resource pdf.")
 	}
-	return call.withSession(func(ctx context.Context, client *client) error {
+	return call.withSessionBudget(transferBudget, func(ctx context.Context, client *client) error {
 		if err := client.downloadPDF(ctx, kind, id, filename, dryRun); err != nil {
 			return err
 		}
