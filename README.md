@@ -1,6 +1,6 @@
 # Valiido CLI
 
-`valiido` connects your terminal or coding agent to a Valiido ISMS account. Build it with Go 1.24 or newer.
+`valiido` connects your terminal or coding agent to a Valiido ISMS account. Build it with Go 1.26 or newer.
 
 ```sh
 go build -o dist/valiido ./cmd/valiido
