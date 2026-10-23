@@ -25,5 +25,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install import tool dependencies
+        run: python -m pip install -r skills/valiido/scripts/requirements.txt
       - name: Run quality and integrity checks
         run: bin/quality

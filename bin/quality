@@ -18,3 +18,10 @@ go vet ./...
 go test -race ./...
 go build -trimpath -o "$quality_tmp/valiido" ./cmd/valiido
 GOOS=windows GOARCH=amd64 go build -trimpath -o "$quality_tmp/valiido.exe" ./cmd/valiido
+
+scripts=skills/valiido/scripts
+python=${VALIIDO_PYTHON:-python3}
+if [ -z "${VALIIDO_PYTHON:-}" ] && [ -x "$scripts/.venv/bin/python" ]; then
+  python=$scripts/.venv/bin/python
+fi
+PYTHONDONTWRITEBYTECODE=1 "$python" -I "$scripts/test_import_tool.py"
