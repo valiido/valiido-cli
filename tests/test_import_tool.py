@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 import pymupdf
 
-TOOL = Path(__file__).with_name("import_tool.py")
+TOOL = Path(__file__).resolve().parents[1] / "skills" / "valiido" / "scripts" / "import_tool.py"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"

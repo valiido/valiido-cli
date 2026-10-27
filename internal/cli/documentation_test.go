@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/valiido/valiido-cli/skills"
+	skills "github.com/valiido/valiido-cli"
 )
 
 func TestHelpIsGeneratedFromUniqueCommandDefinitions(t *testing.T) {

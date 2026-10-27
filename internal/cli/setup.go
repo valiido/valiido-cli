@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 
-	"github.com/valiido/valiido-cli/skills"
+	skills "github.com/valiido/valiido-cli"
 )
 
 func setup(args []string, stdout *output) error {
@@ -78,17 +80,45 @@ func setup(args []string, stdout *output) error {
 
 func secureSkillPath(home, agentDirectory string) (string, error) {
 	current := home
-	for _, component := range []string{agentDirectory, "skills", "valiido", "references"} {
+	for _, component := range []string{agentDirectory, "skills", "valiido"} {
 		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0022 != 0 {
-			return "", failure("storage", "Valiido skill directories must be private from untrusted writers and cannot be symlinks.")
+		if err := checkSkillDirectory(current); err != nil {
+			return "", err
 		}
 	}
-	return filepath.Join(filepath.Dir(current), "SKILL.md"), nil
+	for _, subdirectory := range skillSubdirectories() {
+		if err := checkSkillDirectory(filepath.Join(current, subdirectory)); err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(current, "SKILL.md"), nil
+}
+
+func checkSkillDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0022 != 0 {
+		return failure("storage", "Valiido skill directories must be private from untrusted writers and cannot be symlinks.")
+	}
+	return nil
+}
+
+// skillSubdirectories lists every directory below the skill root, parents first.
+func skillSubdirectories() []string {
+	seen := map[string]bool{}
+	var directories []string
+	for relativePath := range skills.ValiidoFiles {
+		for dir := path.Dir(relativePath); dir != "."; dir = path.Dir(dir) {
+			if !seen[dir] {
+				seen[dir] = true
+				directories = append(directories, filepath.FromSlash(dir))
+			}
+		}
+	}
+	sort.Slice(directories, func(i, j int) bool { return len(directories[i]) < len(directories[j]) })
+	return directories
 }
 
 func checkSkill(path string, force bool) error {

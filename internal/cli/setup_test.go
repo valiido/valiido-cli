@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/valiido/valiido-cli/skills"
+	skills "github.com/valiido/valiido-cli"
 )
 
 func TestInstallSkill(t *testing.T) {
@@ -31,6 +31,14 @@ func TestInstallSkill(t *testing.T) {
 			reference, err := os.ReadFile(filepath.Join(filepath.Dir(path), "references", "importing.md"))
 			if err != nil || string(reference) != skills.ValiidoImporting {
 				t.Fatal("bundled import reference was not installed")
+			}
+			for _, script := range []string{"import_tool.py", "office.py", "pdf_import.py", "tablegrid.py", "requirements.txt"} {
+				if _, err := os.Stat(filepath.Join(filepath.Dir(path), "scripts", script)); err != nil {
+					t.Fatalf("bundled import script %s was not installed", script)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(path), "scripts", "test_import_tool.py")); !os.IsNotExist(err) {
+				t.Fatal("tests must not ship with the skill")
 			}
 			if err := installSkill(path, false); err == nil {
 				t.Fatal("must reject an existing different skill")
