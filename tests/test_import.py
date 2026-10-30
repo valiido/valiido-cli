@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 import pymupdf
 
-TOOL = Path(__file__).resolve().parents[1] / "skills" / "valiido" / "scripts" / "import_tool.py"
+TOOL = Path(__file__).resolve().parents[1] / "skills" / "valiido" / "scripts" / "import.py"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -237,7 +237,7 @@ class ImportTests(unittest.TestCase):
     def test_grouped_drawing_preserves_visual_and_searchable_labels(self):
         from unittest.mock import patch
         sys.path.insert(0, str(TOOL.parent))
-        import office
+        import import_office as office
         path = self.root / "diagram.docx"
         with ZipFile(path, "w") as z:
             z.writestr("word/document.xml", f'<w:document xmlns:w="{W}" '
@@ -279,7 +279,7 @@ class ImportTests(unittest.TestCase):
 
     def test_first_page_header_needs_title_page(self):
         sys.path.insert(0, str(TOOL.parent))
-        import office
+        import import_office as office
         for title_page, shown in (("", False), ('<w:titlePg w:val="0"/>', False), ("<w:titlePg/>", True)):
             path = self.root / "first.docx"
             with ZipFile(path, "w") as z:
@@ -300,7 +300,7 @@ class ImportTests(unittest.TestCase):
 
     def test_excel_calendar_formats_and_numeric_literals(self):
         sys.path.insert(0, str(TOOL.parent))
-        from office import display_cell
+        from import_office import display_cell
         self.assertEqual(display_cell("59", "14", False), "1900-02-28")
         self.assertEqual(display_cell("61", "14", False), "1900-03-01")
         self.assertEqual(display_cell("2.5", "yyyy-mm-dd hh:mm", True), "1904-01-03 12:00:00")
@@ -310,7 +310,7 @@ class ImportTests(unittest.TestCase):
     @unittest.skipUnless(__import__("shutil").which("soffice"), "requires LibreOffice")
     def test_legacy_workbook_merges_and_check(self):
         sys.path.insert(0, str(TOOL.parent))
-        from office_bridge import export
+        from import_office_convert import export
         xlsx = self.root / "sample.xlsx"
         with ZipFile(xlsx, "w") as z:
             z.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'

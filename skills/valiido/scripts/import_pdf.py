@@ -5,8 +5,8 @@ import re
 
 import pymupdf
 
-from office import list_markup, span_attrs
-from tablegrid import BOLD, PAGE_GRID_TOLERANCE, append_continuation, find_tables, to_rows
+from import_office import list_markup, span_attrs
+from import_pdf_tables import BOLD, PAGE_GRID_TOLERANCE, append_continuation, find_tables, to_rows
 
 # Native diagnostics may include document paths or excerpts.
 pymupdf.TOOLS.mupdf_display_errors(False)

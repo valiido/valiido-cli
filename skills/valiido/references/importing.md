@@ -119,11 +119,11 @@ Place working copies of the inputs in the private directory before running the
 commands. Each output command creates a new file.
 
 ```sh
-"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" convert procedure.docx procedure.html
-"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" check procedure.docx procedure.html --report words.json
-"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" preview procedure.docx procedure.html review.html
-"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" table inventory.xlsx rows.jsonl --header-row 2
-"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import_tool.py" preview inventory.xlsx rows.jsonl inventory-review.html
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import.py" convert procedure.docx procedure.html
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import.py" check procedure.docx procedure.html --report words.json
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import.py" preview procedure.docx procedure.html review.html
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import.py" table inventory.xlsx rows.jsonl --header-row 2
+"$skill/scripts/.venv/bin/python" -I "$skill/scripts/import.py" preview inventory.xlsx rows.jsonl inventory-review.html
 ```
 
 - Use `convert` for editable PDF or DOCX. Extracted images are private sibling

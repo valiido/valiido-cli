@@ -253,7 +253,7 @@ def group_picture(package, part, index):
     """Render one grouped drawing, preserving connector positions and labels."""
     from defusedxml.minidom import parseString
     import pymupdf
-    from office_bridge import export
+    from import_office_convert import export
 
     document = parseString(package.part(part), forbid_dtd=True)
     group = document.getElementsByTagNameNS("*", "wgp")[index]
@@ -347,7 +347,7 @@ def docx_source(path):
 
 def workbook(path):
     if path.suffix.lower() == ".xls":
-        from office_bridge import export
+        from import_office_convert import export
         with TemporaryDirectory() as work:
             converted = Path(work) / "workbook.xlsx"
             export(path, converted)

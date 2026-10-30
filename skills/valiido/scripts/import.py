@@ -113,10 +113,10 @@ def convert(args: argparse.Namespace) -> None:
 
 def render(source: Path, image: Callable[[bytes], str]) -> str:
     if source.suffix.lower() == ".docx":
-        from office import docx
+        from import_office import docx
         return docx(source, image)
     if source.suffix.lower() == ".pdf":
-        from pdf_import import render as pdf_render
+        from import_pdf import render as pdf_render
         html, warnings = pdf_render(source, image)
         for warning in warnings:
             print(warning, file=sys.stderr)
@@ -125,8 +125,8 @@ def render(source: Path, image: Callable[[bytes], str]) -> str:
 
 
 def pdf_rows(source: Path) -> Iterator[tuple[str, int, list[str]]]:
-    from pdf_import import cell_text, inspect
-    from tablegrid import to_rows
+    from import_pdf import cell_text, inspect
+    from import_pdf_tables import to_rows
 
     tables, warnings = inspect(source)
     for warning in warnings:
@@ -158,7 +158,7 @@ def pdf_rows(source: Path) -> Iterator[tuple[str, int, list[str]]]:
 def tabular(source: Path, delimiter: str = ",") -> Iterator[tuple[str | None, int, list[str]]]:
     suffix = source.suffix.lower()
     if suffix in (".xlsx", ".xls"):
-        from office import xlsx
+        from import_office import xlsx
         yield from xlsx(source)
     elif suffix == ".csv":
         with source.open(encoding="utf-8-sig", newline="") as stream:
@@ -200,7 +200,7 @@ def records(args):
 
 def table(args: argparse.Namespace) -> None:
     if args.workbook:
-        from office import workbook
+        from import_office import workbook
         if args.sheet or args.header_row != 1 or args.source.suffix.lower() not in (".xls", ".xlsx"):
             raise ValueError("Workbook mode requires a complete Excel file")
         write(args.output, json.dumps(workbook(args.source), ensure_ascii=False, indent=2) + "\n")
@@ -218,7 +218,7 @@ def tokens(text: str) -> list[str]:
 def source_text(path: Path, delimiter: str) -> Iterator[str]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        from pdf_import import inspect, blocks, cell_text
+        from import_pdf import inspect, blocks, cell_text
         items, _ = inspect(path, audit=True)
         for tag, _, value in blocks(items):
             if tag == "table":
@@ -226,7 +226,7 @@ def source_text(path: Path, delimiter: str) -> Iterator[str]:
             else:
                 yield "".join(markup(value).text)
     elif suffix == ".docx":
-        from office import docx_source
+        from import_office import docx_source
         yield from docx_source(path)
     else:
         for _, _, values in tabular(path, delimiter):
@@ -273,7 +273,7 @@ def check_word_structure(source, html):
 
 def check(args: argparse.Namespace) -> bool:
     if args.source.suffix.lower() in (".xls", ".xlsx") and args.html.suffix.lower() == ".json":
-        from office import workbook
+        from import_office import workbook
         original = workbook(args.source)
         valid = original == json.loads(args.html.read_text(encoding="utf-8"))
         payload = json.dumps({"ok": valid, "sheets": len(original["sheets"]),
@@ -332,12 +332,12 @@ def preview_image(result: Path, src: str) -> str:
 
 def preview_source(source: Path, delimiter: str) -> str:
     if source.suffix.lower() == ".pdf":
-        from pdf_import import pymupdf
+        from import_pdf import pymupdf
         with pymupdf.open(source, filetype="pdf") as doc:
             return "\n".join(data_image(page.get_pixmap(dpi=100, annots=False).tobytes("png"))
                                  for page in doc)
     if source.suffix.lower() == ".docx":
-        from office import docx
+        from import_office import docx
         return "".join(markup(docx(source, data_image, include_toc=True),
                                   trusted_data_image).html)
     previous = object()
@@ -354,7 +354,7 @@ def preview_source(source: Path, delimiter: str) -> str:
 
 def preview_result(path: Path) -> str:
     if path.suffix.lower() == ".json":
-        from office import workbook_html
+        from import_office import workbook_html
         return workbook_html(json.loads(path.read_text(encoding="utf-8")), data_image)
     if path.suffix.lower() == ".jsonl":
         with path.open(encoding="utf-8") as stream:
