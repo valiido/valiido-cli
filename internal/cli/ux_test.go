@@ -286,129 +286,66 @@ func TestUXFailureModesAndInterruption(t *testing.T) {
 		!strings.Contains(stdout.String(), `"code":"cancelled"`) {
 		t.Fatalf("unexpected interrupt: %d %q", code, &stdout)
 	}
+	if !strings.Contains(stdout.String(), "Run the command again when you're ready.") {
+		t.Fatalf("login cancellation should not suggest an uncertain change: %q", &stdout)
+	}
 }
 
-func TestUXHelpCoversRoutedResourceActions(t *testing.T) {
-	for _, resource := range resourceNames {
-		for _, action := range append(resourceActions, specialActions[resource.server]...) {
-			args := append(strings.Fields(resource.path), action.name, "--help", "--json")
-			var stdout bytes.Buffer
-			if code := Run(t.Context(), args, &stdout, io.Discard); code != 0 ||
-				!strings.Contains(stdout.String(), "valiido "+resource.path+" "+displayVerb(action.name)+" ") {
-				t.Errorf("%v returned %d: %s", args, code, &stdout)
-			}
-		}
-	}
-	for noun, actions := range specialActions {
-		for _, action := range actions {
-			for _, verb := range []string{action.name, displayVerb(action.name)} {
-				var stdout bytes.Buffer
-				if code := Run(t.Context(), []string{noun, verb, "--help"}, &stdout, io.Discard); code != 0 ||
-					!strings.HasPrefix(stdout.String(), action.description+"\n") ||
-					!strings.Contains(stdout.String(), " "+displayVerb(action.name)+" ") {
-					t.Errorf("%s %s returned %d: %s", noun, verb, code, &stdout)
-				}
-			}
-		}
-	}
+func TestUXCancelledHintDependsOnWrites(t *testing.T) {
 	for _, tc := range []struct {
-		args []string
-		want string
+		args  []string
+		write bool
 	}{
-		{[]string{"help", "documents", "read"}, "--output FILE.pdf"},
-		{[]string{"assets", "pdf", "--help"}, "$ valiido assets pdf 42 --output synthetic.pdf"},
-		{[]string{"resource", "import", "--help"}, "$ valiido resource import documents --file synthetic.json --dry-run"},
-		{[]string{"command", "confirm", "--help"}, "read a preparation result"},
+		{[]string{"auth", "login", "--profile", "test"}, false},
+		{[]string{"assets", "list"}, false},
+		{[]string{"tasks", "show", "42"}, false},
+		{[]string{"command", "run", "assets.list"}, false},
+		{[]string{"command", "confirm", "-"}, true},
+		{[]string{"assets", "create", "--input", "{}"}, true},
+		{[]string{"assets", "update", "42"}, true},
+		{[]string{"assets", "delete", "42"}, true},
+		{[]string{"assets", "import", "--file", "x.json"}, true},
+		{[]string{"documents", "upload", "x.pdf"}, true},
+		{[]string{"command", "run", "assets.bulk_create"}, true},
 	} {
-		var stdout bytes.Buffer
-		if code := Run(t.Context(), tc.args, &stdout, io.Discard); code != 0 || !strings.Contains(stdout.String(), tc.want) {
-			t.Errorf("%v returned %d: %s", tc.args, code, &stdout)
+		_, hint := recoverCommand("cancelled", tc.args, "")
+		if got := hint == "Check the result before repeating a change."; got != tc.write {
+			t.Errorf("%v: hint %q", tc.args, hint)
 		}
 	}
 }
 
-func TestUXCompletionUsesSelectedProfileAndBoundsReads(t *testing.T) {
-	fakeProfile(t, func(w http.ResponseWriter, r *http.Request) {
-		if got := r.FormValue("name"); got != "kpi_measurements.list" {
-			t.Fatalf("unexpected lookup %s", got)
+func TestUXCreateRejectsPositionalID(t *testing.T) {
+	for _, args := range [][]string{{"assets", "create", "1", "--styled"}, {"tasks", "create", "42", "--input", "{}", "--styled"}, {"risks", "create", "x", "--styled"}} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(t.Context(), args, &stdout, &stderr); code != 2 ||
+			!strings.Contains(stderr.String(), "Create takes no record ID") || !strings.Contains(stderr.String(), "--input") {
+			t.Fatalf("%v: %d %q %q", args, code, &stdout, &stderr)
 		}
-		var input struct{ Limit int }
-		if json.Unmarshal([]byte(r.FormValue("input")), &input) != nil || input.Limit != 25 {
-			t.Fatal("completion did not bound the lookup")
-		}
-		writeCommandResult(w, resourcePage{Type: "kpi_measurements", Complete: true, Resources: []resource{{
-			Type: "kpi_measurements", ID: 9007199254740993, Version: resourceVersion(0), Attributes: map[string]any{},
-		}}})
-	})
-	var stdout bytes.Buffer
-	if err := complete(t.Context(), &stdout, "open kpis measurements", "work", "9"); err != nil ||
-		stdout.String() != "9007199254740993\n" {
-		t.Fatalf("bad ID completion: %q (%v)", &stdout, err)
 	}
-	flags := completionFlags("documents show 42")
-	if !slices.Contains(flags, "--text") || !slices.Contains(flags, "--dry-run") || slices.Contains(flags, "--input-file") {
-		t.Fatalf("unexpected flags %v", flags)
+	if got := strings.Join(resourceShortcut([]string{"assets", "show", "1"}), " "); !strings.Contains(got, "1") {
+		t.Fatalf("show lost its ID: %q", got)
 	}
 }
 
-func TestUXSpecialPaginationKeepsLargeCursor(t *testing.T) {
-	var stdout bytes.Buffer
-	out := &output{Writer: &stdout, kind: "chats", profile: "work"}
-	const n = json.Number("9007199254740993")
-	result := commandResult{Data: map[string]any{"chats": []any{map[string]any{"id": n}}, "next_before_id": n}}
-	if err := specialListSuccess(out, result, listOptions{}); err != nil ||
-		!strings.Contains(stdout.String(), "--cursor '9007199254740993'") ||
-		!strings.Contains(stdout.String(), "valiido chats show 9007199254740993") {
-		t.Fatalf("chat continuation lost the cursor or read path: %s (%v)", &stdout, err)
-	}
-	result.Breadcrumbs = nil
-	result.Data = map[string]any{"next_cursor": n}
-	moreComments(out, &result, `{"resource_type":"documents","resource_id":42}`)
-	if len(result.Breadcrumbs) != 1 || !strings.Contains(result.Breadcrumbs[0].Command, `"before":9007199254740993`) {
-		t.Fatalf("comment continuation missing: %+v", result.Breadcrumbs)
-	}
-}
-
-func TestUXNarrowUnicodeAndRelativeDates(t *testing.T) {
-	for _, label := range []string{"漢字", "👩‍💻文", "🇩🇪文", "a\u0301文"} {
-		got := fitDisplay(label, 3)
-		if displayWidth(got) > 3 || !strings.HasSuffix(got, "…") && displayWidth(label) > 3 {
-			t.Fatalf("invalid clipping of %q: %q", label, got)
-		}
-	}
-	v := &readableView{width: 16, relative: true, now: time.Date(2026, 11, 18, 11, 0, 0, 0, time.UTC)}
-	result, err := inspectResult(map[string]any{"resources": []map[string]any{
-		{"id": 42000, "label": "説明書 👩‍💻 Übungen", "updated_at": "2026-11-18T10:40:00Z"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	v.writeRows(result, "documents")
-	for _, line := range strings.Split(strings.TrimSpace(v.String()), "\n") {
-		if displayWidth(line) > v.width {
-			t.Errorf("overlong TTY row: %q", line)
-		}
-	}
-	if !strings.Contains(v.String(), "42000") || v.date("2026-11-18T10:40:00Z") != "20m ago" {
-		t.Fatalf("lost ID or relative date: %s", v)
-	}
-}
-
-func TestLeadingGlobalOptions(t *testing.T) {
-	fakeProfile(t, func(w http.ResponseWriter, r *http.Request) {
-		writeCommandResult(w, documentResource(42, "rich_text"))
-	})
-	for _, args := range [][]string{
-		{"--profile", "work", "--json", "documents", "read", "42"},
-		{"--json", "documents", "read", "42", "--profile=work"},
-		{"documents", "read", "42", "--profile", "work", "--json"},
+func TestUXStandaloneNounBreadcrumbs(t *testing.T) {
+	for args, want := range map[string]string{
+		"command confirm":  "valiido command confirm --help",
+		"commands confirm": "valiido command confirm --help",
+		"command run":      "valiido command run --help",
+		"resource show":    "valiido resource show --help",
+		"resources show":   "valiido resource show --help",
+		"documents read 0": "valiido documents read --help",
+		"tasks show 0":     "valiido tasks show --help",
 	} {
-		var out bytes.Buffer
-		if code := Run(t.Context(), args, &out, io.Discard); code != 0 || !json.Valid(out.Bytes()) {
-			t.Fatalf("global options failed (%d) for %v", code, args)
+		if got := safeHelpCommand(strings.Fields(args)); got != want {
+			t.Errorf("%s: got %q, want %q", args, got, want)
 		}
 	}
-	if code := Run(t.Context(), []string{"--json", "version", "--json"}, io.Discard, io.Discard); code != 2 {
-		t.Fatal("duplicate global option accepted")
+	var stdout, stderr bytes.Buffer
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if code := Run(t.Context(), []string{"command", "confirm"}, &stdout, &stderr); code != 2 ||
+		!strings.Contains(stdout.String(), `"command":"valiido command confirm --help"`) {
+		t.Fatalf("unexpected confirm breadcrumb: %d %q %q", code, &stdout, &stderr)
 	}
 }

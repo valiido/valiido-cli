@@ -176,6 +176,9 @@ func validateCommandPath(args []string, noun string, depth int) error {
 	if !validShortcut(noun, args[depth]) {
 		return unknownHelpCommand(args)
 	}
+	if canonicalVerb(args[depth]) == "create" && len(args) > depth+1 && !strings.HasPrefix(args[depth+1], "-") {
+		return usageError("Create takes no record ID. Pass fields with --input JSON or --input-file FILE.json.")
+	}
 	return nil
 }
 
@@ -247,6 +250,9 @@ func displayNoun(noun string) string {
 		if resource.server == noun {
 			return resource.path
 		}
+	}
+	if alias, ok := nounAliases[noun]; ok {
+		return alias
 	}
 	return noun
 }

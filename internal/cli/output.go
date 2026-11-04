@@ -459,10 +459,44 @@ func recoverCommand(code string, args []string, profile string) (next, hint stri
 	case "browser":
 		return "valiido open --help", "Run the command with --json to copy the browser URL."
 	case "cancelled":
-		return safeHelpCommand(args), "Check the result before repeating a change."
+		if mayHaveWritten(args) {
+			return safeHelpCommand(args), "Check the result before repeating a change."
+		}
+		return safeHelpCommand(args), "Run the command again when you're ready."
 	default:
 		return safeHelpCommand(args), "Check command help and try again after resolving the error."
 	}
+}
+
+// mayHaveWritten reports whether a cancelled command could have left a change
+// half-applied, so the recovery hint asks the caller to check before retrying.
+func mayHaveWritten(args []string) bool {
+	var words []string
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			words = append(words, arg)
+		}
+	}
+	if len(words) < 2 {
+		return false
+	}
+	noun, depth := resolveNoun(words)
+	if depth >= len(words) {
+		return false
+	}
+	verb := canonicalVerb(words[depth])
+	if noun == "commands" && verb == "run" && depth+1 < len(words) {
+		_, verb, _ = strings.Cut(words[depth+1], ".")
+	}
+	if noun == "auth" && verb == "logout" {
+		return true
+	}
+	for _, write := range []string{"create", "update", "delete", "destroy", "import", "upload", "confirm", "reject", "restore", "duplicate", "copy"} {
+		if strings.Contains(verb, write) {
+			return true
+		}
+	}
+	return false
 }
 
 func safeHelpCommand(args []string) string {
