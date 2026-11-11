@@ -18,7 +18,10 @@ import (
 )
 
 const clientID = "valiido-cli"
-const version = "0.1.0"
+
+// version is set at release build time with -ldflags "-X github.com/valiido/valiido-cli/internal/cli.version=…".
+var version = "0.1.0"
+
 const agentScope = "isms:read isms:write"
 const legacyReadScope = "documents:read tasks:read risks:read"
 const legacyFullScope = "documents:read documents:write tasks:read tasks:write risks:read risks:write"

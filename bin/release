@@ -1,0 +1,32 @@
+#!/bin/sh
+# Build release archives for every supported platform: bin/release v1.2.3
+set -eu
+
+cd "$(dirname "$0")/.."
+
+tag=${1:?usage: bin/release vX.Y.Z}
+version=${tag#v}
+out=dist/release
+rm -rf "$out"
+mkdir -p "$out"
+
+for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+  os=${target%/*}
+  arch=${target#*/}
+  name=valiido_${os}_${arch}
+  work=$(mktemp -d)
+  binary=valiido
+  [ "$os" = windows ] && binary=valiido.exe
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+    -ldflags "-s -w -X github.com/valiido/valiido-cli/internal/cli.version=$version" \
+    -o "$work/$binary" ./cmd/valiido
+  if [ "$os" = windows ]; then
+    (cd "$work" && zip -q "$OLDPWD/$out/$name.zip" "$binary")
+  else
+    tar -C "$work" -czf "$out/$name.tar.gz" "$binary"
+  fi
+  rm -rf "$work"
+done
+
+(cd "$out" && sha256sum valiido_* > checksums.txt)
+ls -l "$out"
