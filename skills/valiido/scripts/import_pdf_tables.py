@@ -12,7 +12,7 @@ common column grid.
 import re
 from bisect import bisect_left
 
-import pymupdf
+from import_pdf_page import Box, Page, rgb
 
 DARK = 0.35      # max colour component of a border
 THIN = 2.5       # max thickness of a border rectangle
@@ -22,32 +22,30 @@ MIN_COL = 6.0    # narrower columns without own text are layout spacers
 MIN_ROW = 4.0
 
 
-def _bold(span):
-    return bool(span["flags"] & 16) or "bold" in span["font"].lower()
-
-
 def border_segments(page):
     hs, vs = [], []
-    for dr in page.get_drawings():
-        col = dr.get("fill") if dr["type"] == "f" else dr.get("color")
+    for kind, fill, stroke, fill_color, stroke_color, shape in page.drawings():
+        if not fill and not stroke:
+            continue
+        filled_only = fill and not stroke
+        col = rgb(fill_color if filled_only else stroke_color)
         if col is None or max(col) > DARK:
             continue
-        for it in dr["items"]:
-            if it[0] == "re":
-                r = it[1]
-                if r.width <= THIN and r.height > THIN:
-                    vs.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
-                elif r.height <= THIN and r.width > THIN:
-                    hs.append(((r.y0 + r.y1) / 2, r.x0, r.x1))
-                elif dr["type"] != "f" and r.width > THIN and r.height > THIN:  # stroked rectangle
-                    vs += [(r.x0, r.y0, r.y1), (r.x1, r.y0, r.y1)]
-                    hs += [(r.y0, r.x0, r.x1), (r.y1, r.x0, r.x1)]
-            elif it[0] == "l":
-                p, q = it[1], it[2]
-                if abs(p.x - q.x) < 1 and abs(p.y - q.y) > THIN:
-                    vs.append((p.x, min(p.y, q.y), max(p.y, q.y)))
-                elif abs(p.y - q.y) < 1 and abs(p.x - q.x) > THIN:
-                    hs.append((p.y, min(p.x, q.x), max(p.x, q.x)))
+        if kind == "re":
+            r = shape
+            if r.width <= THIN and r.height > THIN:
+                vs.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
+            elif r.height <= THIN and r.width > THIN:
+                hs.append(((r.y0 + r.y1) / 2, r.x0, r.x1))
+            elif not filled_only and r.width > THIN and r.height > THIN:  # stroked rectangle
+                vs += [(r.x0, r.y0, r.y1), (r.x1, r.y0, r.y1)]
+                hs += [(r.y0, r.x0, r.x1), (r.y1, r.x0, r.x1)]
+            continue
+        for (px, py), (qx, qy) in shape:
+            if abs(px - qx) < 1 and abs(py - qy) > THIN:
+                vs.append((px, min(py, qy), max(py, qy)))
+            elif abs(py - qy) < 1 and abs(px - qx) > THIN:
+                hs.append((py, min(px, qx), max(px, qx)))
     return hs, vs
 
 
@@ -56,7 +54,7 @@ def _components(hs, vs):
     segs = [("h", s) for s in hs] + [("v", s) for s in vs]
     rects = []
     for k, (pos, a, b) in segs:
-        rects.append(pymupdf.Rect(a, pos, b, pos) if k == "h" else pymupdf.Rect(pos, a, pos, b))
+        rects.append(Box(a, pos, b, pos) if k == "h" else Box(pos, a, pos, b))
     parent = list(range(len(segs)))
 
     def find(i):
@@ -64,7 +62,7 @@ def _components(hs, vs):
             parent[i] = parent[parent[i]]
             i = parent[i]
         return i
-    grown = [pymupdf.Rect(r.x0 - 2, r.y0 - 2, r.x1 + 2, r.y1 + 2) for r in rects]
+    grown = [Box(r.x0 - 2, r.y0 - 2, r.x1 + 2, r.y1 + 2) for r in rects]
     order = sorted(range(len(segs)), key=lambda i: grown[i].y0)
     for n, i in enumerate(order):
         for index in range(n + 1, len(order)):
@@ -172,7 +170,7 @@ def _lines_in(spans):
         if txt:
             res.append({"text": txt, "y0": min(s["bbox"][1] for s in sp), "y1": max(s["bbox"][3] for s in sp),
                         "x0": min(s["bbox"][0] for s in sp), "x1": max(s["bbox"][2] for s in sp), "size": max(s["size"] for s in sp),
-                        "bold": all(_bold(s) for s in sp if any(ch.isalnum() for ch in s["text"]))})
+                        "bold": all(s["bold"] for s in sp if any(ch.isalnum() for ch in s["text"]))})
     return res
 
 
@@ -196,7 +194,7 @@ def _split_spans(raw, cell_at):
             if k is None or not text.strip():
                 continue
             bbox = (min(c["bbox"][0] for c in chars), s["bbox"][1], max(c["bbox"][2] for c in chars), s["bbox"][3])
-            out.setdefault(k, []).append({"text": text, "bbox": bbox, "size": s["size"], "flags": s["flags"], "font": s["font"]})
+            out.setdefault(k, []).append({"text": text, "bbox": bbox, "size": s["size"], "bold": s["bold"]})
     return out
 
 
@@ -220,12 +218,10 @@ def rectangular_strips(members: list[tuple[int, int]]) -> list[dict[str, int]]:
     return strips
 
 
-def find_tables(page: pymupdf.Page, audit: bool = False) -> list[Table]:
+def find_tables(page: Page, audit: bool = False) -> list[Table]:
     hs, vs = border_segments(page)
-    flags = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES
-    raw = [span for block in page.get_text("rawdict", flags=flags)["blocks"] if block["type"] == 0
-           for line in block["lines"] for span in line["spans"] if span["size"] >= 4] if not audit else []
-    words = page.get_text("words") if audit else []
+    raw = [span for span in page.spans() if span["size"] >= 4] if not audit else []
+    words = page.words() if audit else []
     tables = []
     for gh, gv in _components(hs, vs):
         xs = _cluster([s[0] for s in gv])
@@ -285,12 +281,11 @@ def find_tables(page: pymupdf.Page, audit: bool = False) -> list[Table]:
             return grid2cell.get((max(r, 0), max(k, 0)))
         if audit:
             pieces = {}
-            for x0, y0, x1, y1, text, *_ in words:
+            for x0, y0, x1, y1, text, size in words:
                 index = cell_at((x0 + x1) / 2, (y0 + y1) / 2)
                 if index is not None:
                     pieces.setdefault(index, []).append({
-                        "bbox": (x0, y0, x1, y1), "text": text, "flags": 0, "font": "",
-                        "size": (y1 - y0) / 1.35,
+                        "bbox": (x0, y0, x1, y1), "text": text, "bold": False, "size": size,
                     })
         else:
             pieces = _split_spans(raw, cell_at)
@@ -312,7 +307,7 @@ def find_tables(page: pymupdf.Page, audit: bool = False) -> list[Table]:
                 continue
             c["r0"], c["r1"] = rmap[rows[0]], rmap[rows[-1]] + 1
             out.append(c)
-        bbox = pymupdf.Rect(xs[0], ys[0], xs[-1], ys[-1])
+        bbox = Box(xs[0], ys[0], xs[-1], ys[-1])
         tables.append(Table(bbox, out, len(keep_r), xs))
     tables.sort(key=lambda t: t.bbox.y0)
     return tables

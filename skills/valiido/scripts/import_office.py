@@ -252,8 +252,8 @@ def span_attrs(cols, rows):
 def group_picture(package, part, index):
     """Render one grouped drawing, preserving connector positions and labels."""
     from defusedxml.minidom import parseString
-    import pymupdf
     from import_office_convert import export
+    from import_pdf_page import Renderer, open_pdf, pages
 
     document = parseString(package.part(part), forbid_dtd=True)
     group = document.getElementsByTagNameNS("*", "wgp")[index]
@@ -279,15 +279,12 @@ def group_picture(package, part, index):
                 clipped.writestr(name, document.toxml(encoding="utf-8") if name == part else package.part(name))
         pdf = path.with_suffix(".pdf")
         export(path, pdf)
-        with pymupdf.open(pdf) as rendered:
-            page = rendered[0]
-            bounds = pymupdf.Rect()
-            for _, box, *_ in page.get_bboxlog():
-                bounds |= pymupdf.Rect(box)
-            bounds &= page.rect
-            if bounds.is_empty:
-                raise ValueError("Word drawing did not render")
-            return page.get_pixmap(dpi=180, clip=bounds).tobytes("png")
+        with open_pdf(pdf) as rendered:
+            bounds = next(pages(rendered)).drawn_bounds()
+        if bounds.is_empty:
+            raise ValueError("Word drawing did not render")
+        with Renderer(pdf) as renderer:
+            return renderer.png(0, 180, clip=bounds)
 
 
 def word_parts(package):

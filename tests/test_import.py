@@ -1,18 +1,70 @@
 """CLI tests built entirely from synthetic documents."""
 import json
+from io import BytesIO
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 from zipfile import ZipFile
+import zlib
 
-import pymupdf
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen.canvas import Canvas
 
 TOOL = Path(__file__).resolve().parents[1] / "skills" / "valiido" / "scripts" / "import.py"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def png(width, height, gray):
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = (b"\x00" + bytes([gray]) * 3 * width) * height
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+class SyntheticPdf:
+    """Pages drawn with top-left coordinates, Helvetica 11pt text and 1pt black lines."""
+
+    def __init__(self, path):
+        self.canvas = Canvas(str(path), invariant=True)
+        self.number = -1
+        self.height = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, *_):
+        if kind is None:
+            self.canvas.showPage()
+            self.canvas.save()
+
+    def new_page(self, width, height):
+        if self.number >= 0:
+            self.canvas.showPage()
+        self.number += 1
+        self.height = height
+        self.canvas.setPageSize((width, height))
+        return self
+
+    def draw_rect(self, rect):
+        x0, y0, x1, y1 = rect
+        self.canvas.rect(x0, self.height - y1, x1 - x0, y1 - y0, stroke=1, fill=0)
+
+    def draw_line(self, start, end):
+        self.canvas.line(start[0], self.height - start[1], end[0], self.height - end[1])
+
+    def insert_text(self, point, text):
+        self.canvas.setFont("Helvetica", 11)
+        self.canvas.drawString(point[0], self.height - point[1], text)
+
+    def insert_image(self, rect, data):
+        x0, y0, x1, y1 = rect
+        self.canvas.drawImage(ImageReader(BytesIO(data)), x0, self.height - y1, x1 - x0, y1 - y0)
 
 
 class ImportTests(unittest.TestCase):
@@ -29,7 +81,7 @@ class ImportTests(unittest.TestCase):
 
     def test_pdf_grid_and_continuation(self):
         path = self.root / "document.pdf"
-        with pymupdf.open() as doc:
+        with SyntheticPdf(path) as doc:
             for continued in (False, True):
                 page = doc.new_page(width=400, height=500)
                 y = 390 if not continued else 65
@@ -55,7 +107,6 @@ class ImportTests(unittest.TestCase):
                         if value:
                             page.insert_text((x, y + 14 + ri * 20), value)
                 page.insert_text((40, 20), "Repeated furniture")
-            doc.save(path)
         self.run_tool("convert", path, "out.html")
         result = (self.root / "out.html").read_text()
         self.assertIn('rowspan="2"', result)
@@ -70,7 +121,7 @@ class ImportTests(unittest.TestCase):
 
     def test_pdf_table_records(self):
         path = self.root / "register.pdf"
-        with pymupdf.open() as doc:
+        with SyntheticPdf(path) as doc:
             for index in range(2):
                 page = doc.new_page(width=360, height=450)
                 y = 310 if index == 0 else 70
@@ -82,7 +133,6 @@ class ImportTests(unittest.TestCase):
                                       (45, 34, str(index + 1)), (125, 34, "First"),
                                       (125, 48, "line")]:
                     page.insert_text((x, y + off), value)
-            doc.save(path)
         self.run_tool("table", path, "rows.jsonl")
         rows = [json.loads(row) for row in (self.root / "rows.jsonl").read_text().splitlines()]
         self.assertEqual([r["values"] for r in rows],
@@ -90,7 +140,7 @@ class ImportTests(unittest.TestCase):
 
     def convert_pdf_tables(self, fragments, decorate=None):
         path = self.root / "fragments.pdf"
-        with pymupdf.open() as doc:
+        with SyntheticPdf(path) as doc:
             for y, key_edge, rows in fragments:
                 page = doc.new_page(width=400, height=500)
                 bottom = y + 20 * len(rows)
@@ -107,7 +157,6 @@ class ImportTests(unittest.TestCase):
                 page.insert_text((40, 480), f"Synthetic footer {page.number + 1}")
                 if decorate:
                     decorate(page, y, key_edge)
-            doc.save(path)
         self.run_tool("convert", path, "out.html")
         self.run_tool("check", path, "out.html")
         return (self.root / "out.html").read_text()
@@ -135,11 +184,10 @@ class ImportTests(unittest.TestCase):
         self.assertIn("<td>A</td><td>First part continues here.</td>", result)
 
     def test_pdf_repeated_header_image_extending_into_body(self):
-        logo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 12, 4), False)
-        logo.clear_with(90)
+        logo = png(12, 4, 90)
 
         def add_logo(page, y, key_edge):
-            page.insert_image((40, 46, 100, 66), pixmap=logo)
+            page.insert_image((40, 46, 100, 66), logo)
 
         result = self.convert_pdf_tables([
             (350, 100, [("Key", "Details"), ("A", "First")]),
@@ -209,9 +257,7 @@ class ImportTests(unittest.TestCase):
     def test_docx_extracts_only_embedded_raster_images(self):
         path = self.root / "picture.docx"
         drawing = "http://schemas.openxmlformats.org/drawingml/2006/main"
-        with pymupdf.open() as doc:
-            page = doc.new_page(width=20, height=20)
-            png = page.get_pixmap().tobytes("png")
+        picture = png(20, 20, 255)
         with ZipFile(path, "w") as package:
             package.writestr("word/document.xml", f"""<w:document xmlns:w="{W}"
                 xmlns:a="{drawing}" xmlns:r="{R}"><w:body><w:p><w:r><w:drawing>
@@ -221,9 +267,9 @@ class ImportTests(unittest.TestCase):
                 <Relationship Id="local" Target="media/picture.png"/>
                 <Relationship Id="remote" TargetMode="External" Target="https://example.invalid/image"/>
                 </Relationships>""")
-            package.writestr("word/media/picture.png", png)
+            package.writestr("word/media/picture.png", picture)
         self.run_tool("convert", path, "out.html")
-        self.assertEqual((self.root / "out.html.image-1.png").read_bytes(), png)
+        self.assertEqual((self.root / "out.html.image-1.png").read_bytes(), picture)
         output = (self.root / "out.html").read_text()
         self.assertIn('src="out.html.image-1.png"', output)
         self.assertNotIn("example.invalid", output)

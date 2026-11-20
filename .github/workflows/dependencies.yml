@@ -41,7 +41,7 @@ jobs:
           commit-message: "Update dependencies"
           title: "Update dependencies"
           body: |
-            Runs `bin/update`: Go modules and the import tool's Python packages at their latest releases.
+            Runs `bin/update`: Go modules at their latest releases. Python packages are unpinned and always install their latest release.
 
             CI runs `bin/quality` on this branch after publication. Check it before merging.
 

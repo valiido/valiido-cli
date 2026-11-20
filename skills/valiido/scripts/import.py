@@ -332,10 +332,8 @@ def preview_image(result: Path, src: str) -> str:
 
 def preview_source(source: Path, delimiter: str) -> str:
     if source.suffix.lower() == ".pdf":
-        from import_pdf import pymupdf
-        with pymupdf.open(source, filetype="pdf") as doc:
-            return "\n".join(data_image(page.get_pixmap(dpi=100, annots=False).tobytes("png"))
-                                 for page in doc)
+        from import_pdf import page_images
+        return "\n".join(data_image(png) for png in page_images(source, 100))
     if source.suffix.lower() == ".docx":
         from import_office import docx
         return "".join(markup(docx(source, data_image, include_toc=True),

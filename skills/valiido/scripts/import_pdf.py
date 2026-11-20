@@ -3,14 +3,9 @@ from collections import Counter
 from html import escape
 import re
 
-import pymupdf
-
 from import_office import list_markup, span_attrs
+from import_pdf_page import Renderer, open_pdf, pages as pdf_pages
 from import_pdf_tables import BOLD, PAGE_GRID_TOLERANCE, append_continuation, find_tables, to_rows
-
-# Native diagnostics may include document paths or excerpts.
-pymupdf.TOOLS.mupdf_display_errors(False)
-pymupdf.TOOLS.mupdf_display_warnings(False)
 
 BULLET = re.compile(r"^([•▪◦–-]|\d+[.)])\s+(.+)")
 CONTENTS = re.compile(r"\s*\.{3,}\s*\d+\s*$")
@@ -46,14 +41,12 @@ def table_html(table):
 
 
 def lines(page):
-    flags = pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES
-    for block in page.get_text("dict", flags=flags)["blocks"]:
-        for line in block.get("lines", []):
-            spans = [s for s in line["spans"] if s["text"].strip()]
-            if spans:
-                text = "".join(s["text"] for s in line["spans"]).strip()
-                yield (pymupdf.Rect(line["bbox"]), block["number"], text,
-                       max(s["size"] for s in spans), all(s["flags"] & 16 for s in spans))
+    for line in page.lines:
+        spans = [s for s in line["spans"] if s["text"].strip()]
+        if spans:
+            text = "".join(s["text"] for s in line["spans"]).strip()
+            yield (line["bbox"], line["block"], text,
+                   max(s["size"] for s in spans), all(s["bold"] for s in spans))
 
 
 def margin(box, height):
@@ -96,35 +89,31 @@ def boundary_picture(box, height, digest):
 def inspect(path, images=False, audit=False):
     """Ordered items and page-aware table fragments from the source."""
     pages, counts = [], Counter()
-    with pymupdf.open(path, filetype="pdf") as doc:
-        picture_counts = Counter()
-        picture_info = []
-        if images:
-            for page in doc:
-                if page.rotation:
-                    page.remove_rotation()
-                entries = []
-                for info in page.get_image_info(hashes=True):
-                    box = pymupdf.Rect(info["bbox"]) & page.rect
-                    entries.append((box, boundary_picture(box, page.rect.height, info["digest"])))
-                picture_info.append(entries)
-                picture_counts.update({key for _, key in entries if key is not None})
-        for page in doc:
-            if page.rotation:
-                page.remove_rotation()
+    picture_counts = Counter()
+    picture_info = []
+    with open_pdf(path) as doc:
+        for page in pdf_pages(doc):
             height = page.rect.height
             text = list(lines(page))
             counts.update({boundary_key(line, height) for line in text if margin(line[0], height)})
             tables = find_tables(page, audit=audit)
-            pictures = []
+            entries = []
             if images:
-                for box, key in picture_info[page.number]:
-                    if not box.is_empty and not margin(box, height) and (
-                        key is None or picture_counts[key] == 1
-                    ):
-                        pictures.append((box, page.get_pixmap(clip=box, dpi=120, alpha=False,
-                                                              annots=False).tobytes("png")))
-            pages.append((height, text, tables, pictures))
+                for box, digest in page.images():
+                    box &= page.rect
+                    entries.append((box, boundary_picture(box, height, digest)))
+                picture_counts.update({key for _, key in entries if key is not None})
+            picture_info.append(entries)
+            pages.append((height, text, tables))
+    if images:
+        with Renderer(path) as renderer:
+            for number, (height, text, tables) in enumerate(pages):
+                pictures = [(box, renderer.png(number, 120, clip=box)) for box, key in picture_info[number]
+                            if not box.is_empty and not margin(box, height) and (
+                                key is None or picture_counts[key] == 1)]
+                pages[number] = (height, text, tables, pictures)
+    else:
+        pages = [(*page, []) for page in pages]
 
     result, warnings = [], []
     previous = None
@@ -141,8 +130,7 @@ def inspect(path, images=False, audit=False):
                 r"(?:table of contents|contents|inhaltsverzeichnis)", value, re.I
             )):
                 continue
-            center = (box.tl + box.br) / 2
-            if any(center in t.bbox for t in tables):
+            if any(t.bbox.contains(box.center) for t in tables):
                 continue
             items.append((box, "line", line))
         items.sort(key=lambda x: (x[0].y0, x[0].x0))
@@ -205,6 +193,12 @@ def paragraphs(lines):
         previous = (page, block, box.y1)
     if group:
         yield group[0], 0, escape(join_lines(group[1]))
+
+
+def page_images(path, dpi):
+    """PNG of every page, for side-by-side review."""
+    with Renderer(path) as renderer:
+        return [renderer.png(index, dpi) for index in range(len(renderer))]
 
 
 def render(path, image):

@@ -32,7 +32,7 @@ func TestInstallSkill(t *testing.T) {
 			if err != nil || string(reference) != skills.ValiidoImporting {
 				t.Fatal("bundled import reference was not installed")
 			}
-			for _, script := range []string{"import.py", "import_office.py", "import_office_convert.py", "import_pdf.py", "import_pdf_tables.py", "requirements.txt"} {
+			for _, script := range []string{"import.py", "import_office.py", "import_office_convert.py", "import_pdf.py", "import_pdf_page.py", "import_pdf_tables.py", "requirements.txt"} {
 				if _, err := os.Stat(filepath.Join(filepath.Dir(path), "scripts", script)); err != nil {
 					t.Fatalf("bundled import script %s was not installed", script)
 				}
