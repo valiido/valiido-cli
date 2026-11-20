@@ -3,7 +3,7 @@
 Your Valiido ISMS in the terminal: documents, tasks, risks, assets, audits and more.
 Built for people and for coding agents such as Claude Code and Codex.
 
-[Valiido](https://valiido.com) · [Releases](https://github.com/valiido/valiido-cli/releases) · [Agent skill](skills/valiido/SKILL.md)
+[Valiido](https://valiido.com) · [AI agents](https://valiido.com/ai) · [API reference](https://app.valiido.com/api) · [Releases](https://github.com/valiido/valiido-cli/releases) · [Agent skill](skills/valiido/SKILL.md)
 
 ## Install
 
@@ -33,7 +33,7 @@ This installs the Valiido skill, so the agent knows how to read records, prepare
 changes and run imports. Then just ask, for example "Which risks have no owner?".
 
 - `valiido command list` lists every action with its JSON input schema.
-- `valiido api schema` prints the API description (OpenAPI).
+- `valiido api schema` prints the API description (OpenAPI); the [API reference](https://app.valiido.com/api) shows it after sign-in.
 - Output is JSON when piped; errors carry a stable code, a hint and the next command.
 - Changes are prepared first and only apply after `valiido command confirm`.
 
