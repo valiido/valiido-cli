@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/valiido/valiido-cli/main/install.sh
 ```
 
 Linux and macOS, amd64 and arm64. Windows: download the zip from [Releases](https://github.com/valiido/valiido-cli/releases).
-Run the command again to update.
+Update with `valiido upgrade`; the CLI also tells you when a new release is out.
 
 ## Set up
 

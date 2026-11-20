@@ -278,6 +278,7 @@ var optionDescriptions = map[string]string{
 	"cursor": "Resume a list using its next_cursor", "page-size": "Maximum results per request (1–250)",
 	"file": "Read a JSON array from this file", "dry-run": "Preview without applying changes",
 	"input": "Pass a JSON object", "input-file": "Read a JSON object from this file",
+	"check": "Only report whether a newer version exists",
 }
 
 func writeLeafHelp(out *strings.Builder, description, usage, name, parent string) {

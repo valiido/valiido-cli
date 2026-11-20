@@ -88,7 +88,7 @@ func run(ctx context.Context, args []string, stdout *output, stderr io.Writer) e
 
 func commandSupportsProfile(name string) bool {
 	switch name {
-	case "help", "more", "setup", "version", "shell-completion", "_complete":
+	case "help", "more", "setup", "version", "upgrade", "shell-completion", "_complete":
 		return false
 	default:
 		return true

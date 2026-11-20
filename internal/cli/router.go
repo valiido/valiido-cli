@@ -49,6 +49,9 @@ func init() {
 		{"version", "Show the installed version", "system", true, []commandDefinition{
 			{"version", "valiido version", "", showVersion},
 		}},
+		{"upgrade", "Update valiido to the latest release", "system", true, []commandDefinition{
+			{"upgrade", "valiido upgrade [--check] [--dry-run]", "", runUpgrade},
+		}},
 		{"open", "Open a record in the browser", "records", true, []commandDefinition{
 			{"open", "valiido open NOUN ID [--profile NAME]", "", openRecord},
 		}},
