@@ -1,0 +1,33 @@
+#!/bin/sh
+# Update every dependency to its latest release: Go modules and the import tool's Python packages.
+set -eu
+
+cd "$(dirname "$0")/.."
+
+echo "Go modules"
+go get -u ./...
+go mod tidy
+
+echo "Python packages"
+python3 -I - skills/valiido/scripts/requirements.txt <<'PY'
+import json, re, sys, urllib.request
+
+path = sys.argv[1]
+lines = []
+for line in open(path):
+    match = re.match(r"^([A-Za-z0-9_.-]+)", line)
+    if not match:
+        lines.append(line)
+        continue
+    name = match.group(1)
+    with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/json", timeout=30) as response:
+        latest = json.load(response)["info"]["version"]
+    major = int(latest.split(".")[0])
+    pinned = f"{name}>={latest},<{major + 1}\n"
+    if pinned != line:
+        print(f"  {line.strip()} -> {pinned.strip()}")
+    lines.append(pinned)
+open(path, "w").writelines(lines)
+PY
+
+git --no-pager diff --stat -- go.mod go.sum skills/valiido/scripts/requirements.txt

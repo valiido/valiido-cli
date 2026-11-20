@@ -1,0 +1,60 @@
+name: Monthly dependency updates
+
+on:
+  schedule:
+    - cron: "17 6 1 * *" # 1st of every month, 06:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: monthly-dependency-updates
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write # Dispatch CI for the bot-created PR branch.
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Update dependencies
+        run: bin/update
+      - name: Create or update dependency PR
+        id: pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: automation/monthly-dependencies
+          delete-branch: true
+          commit-message: "Update dependencies"
+          title: "Update dependencies"
+          body: |
+            Runs `bin/update`: Go modules and the import tool's Python packages at their latest releases.
+
+            CI runs `bin/quality` on this branch after publication. Check it before merging.
+
+            [Update log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          add-paths: |
+            go.mod
+            go.sum
+            skills/valiido/scripts/requirements.txt
+      # PRs created with the workflow token do not trigger CI on their own.
+      - name: Run CI on the dependency PR
+        if: steps.pr.outputs.pull-request-number && steps.pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_BRANCH: ${{ steps.pr.outputs.pull-request-branch }}
+        run: gh workflow run ci.yml --ref "$PR_BRANCH"
